@@ -13,3 +13,9 @@ Operational constraints and execution rules for autonomous agents working in thi
 ## 2. Trajectory Sweep Scope
 * **Rule:** Navigation sweeps and validation runs must focus strictly on **independent, one-way trajectories with unique start and end points**.
 * Do not batch waypoints into continuous multi-waypoint patrol trajectories (`goThroughPoses` or `followWaypoints`) unless explicitly requested by the user.
+
+---
+
+## 3. Teardown & Process Cleanup
+* **Finding:** Terminating Gazebo Harmonic via standard `killall gz-sim-server` fails because the command line is `gz sim server` / `gz sim gui`. Orphaned simulations continue publishing to `/clock` and sensor topics, corrupting sim time and blocking Nav2.
+* **Rule:** Always terminate simulation processes cleanly using `pkill -9 -f "gz sim"` and `pkill -9 -f "ros2"`.

@@ -246,7 +246,7 @@ class ReadinessGate(Node):
         self.destroy_subscription(sub_map)
         self.get_logger().info('Map successfully received!')
 
-        # If localization mode (AMCL), publish seed initialpose at spawn
+        # If localization mode (AMCL), publish seed initialpose at spawn and wait for TF
         if not self.slam:
             init_x = float(self.get_parameter('initial_x').value)
             init_y = float(self.get_parameter('initial_y').value)
@@ -255,7 +255,12 @@ class ReadinessGate(Node):
                 f'Seeding initial pose at spawn ({init_x:.3f}, {init_y:.3f}, yaw={init_yaw:.3f} rad)...'
             )
             init_topic = f'/{self.ns}/initialpose' if self.ns else '/initialpose'
-            pub_init = self.create_publisher(PoseWithCovarianceStamped, init_topic, 10)
+            init_qos = QoSProfile(
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                depth=5
+            )
+            pub_init = self.create_publisher(PoseWithCovarianceStamped, init_topic, init_qos)
 
             msg = PoseWithCovarianceStamped()
             msg.header.stamp = self.get_clock().now().to_msg()
@@ -270,10 +275,36 @@ class ReadinessGate(Node):
             msg.pose.covariance[7] = 0.25   # y variance
             msg.pose.covariance[35] = 0.068 # yaw variance (~15 deg std dev)
 
-            for _ in range(5):
-                pub_init.publish(msg)
-                rclpy.spin_once(self, timeout_sec=0.1)
+            tf_buffer = Buffer()
+            tf_listener = TransformListener(tf_buffer, self)
+
+            loc_ready = False
+            last_pub = 0.0
+            self.get_logger().info('Waiting for AMCL to establish map -> odom transform...')
+
+            while rclpy.ok() and not loc_ready:
+                if time.monotonic() - start_time > self.timeout_sec:
+                    self.get_logger().error('Stage 2 FAILED: Timed out waiting for map -> odom transform from AMCL!')
+                    self.destroy_publisher(pub_init)
+                    return False
+
+                now = time.monotonic()
+                if now - last_pub > 1.0:
+                    last_pub = now
+                    msg.header.stamp = self.get_clock().now().to_msg()
+                    pub_init.publish(msg)
+
+                try:
+                    if tf_buffer.can_transform('map', 'odom', rclpy.time.Time()):
+                        loc_ready = True
+                        break
+                except Exception:
+                    pass
+
+                rclpy.spin_once(self, timeout_sec=0.2)
+
             self.destroy_publisher(pub_init)
+            self.get_logger().info('AMCL map -> odom transform verified!')
 
         self.get_logger().info('=== [Stage 2/2: Map Gate] Map & localization verified! ===')
         return True

@@ -17,6 +17,7 @@ from launch.actions import (
     LogInfo,
     OpaqueFunction,
     RegisterEventHandler,
+    Shutdown,
 )
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -221,7 +222,8 @@ def launch_setup(context, *args, **kwargs):
             name='send_goal',
             parameters=[{'use_sim_time': True}],
             arguments=[goal_x, goal_y, yaw_deg, '--ns', namespace, '--world', world],
-            output='screen'
+            output='screen',
+            on_exit=Shutdown(),
         ))
     else:
         nav2_actions.append(LogInfo(msg=f'[a200_point_nav] READY. Send goals with: ros2 run nav_worlds send_goal.py X Y [YAW] --ns {namespace}'))
