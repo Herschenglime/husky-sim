@@ -53,21 +53,13 @@ for axis in ('x', 'y', 'yaw'):
 ARGUMENTS.append(DeclareLaunchArgument('z', default_value='0.3'))
 
 
-def headless_gz(world_sdf):
-    """Server-only Gazebo, replicating what clearpath_gz's gz_sim.launch.py sets up.
-
-    Three things have to come across or the robot never appears: the resource
-    path (clearpath *overwrites* GZ_SIM_RESOURCE_PATH with its own worlds and
-    meshes plus every sourced package), the clock bridge (without it nothing
-    using sim time ever gets a clock and the whole stack sits waiting), and the
-    world itself.
-
-    `-s` runs the server alone; `--headless-rendering` is separate and still
-    needed, because sensors that render - the realsense on the arch - produce
-    nothing without a rendering context, and the failure is silent: the camera
-    topic is advertised and simply never publishes.
+def build_gz_actions(world_sdf, headless):
+    """Run Gazebo (headless or GUI) avoiding clearpath_gz's gz_sim.launch.py.
+    
+    This lets us override the gui.config for top-down views, or add headless flags.
     """
     pkg_gz = get_package_share_directory('clearpath_gz')
+    pkg_nav_worlds = get_package_share_directory('nav_worlds')
     pkg_ros_gz = get_package_share_directory('ros_gz_sim')
     packages_paths = [os.path.join(p, 'share')
                       for p in os.getenv('AMENT_PREFIX_PATH', '').split(':') if p]
@@ -78,9 +70,15 @@ def headless_gz(world_sdf):
                os.path.join(pkg_gz, 'meshes') + ':',
                ':' + ':'.join(packages_paths)])
 
+    if headless:
+        gz_args = f'{world_sdf} -r -s --headless-rendering -v 4'
+    else:
+        gui_config = os.path.join(pkg_nav_worlds, 'config', 'gui.config')
+        gz_args = f'{world_sdf} -r -v 4 --gui-config {gui_config}'
+
     gz_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(pkg_ros_gz, 'launch', 'gz_sim.launch.py')),
-        launch_arguments=[('gz_args', f'{world_sdf} -r -s --headless-rendering -v 4')],
+        launch_arguments=[('gz_args', gz_args)],
     )
 
     clock_bridge = Node(
@@ -99,13 +97,7 @@ def launch_setup(context, *args, **kwargs):
     # gz_sim appends '.sdf', so hand it the path without the extension.
     gz_world = world_file[:-4] if world_file.endswith('.sdf') else (world_file or world)
 
-    if headless:
-        actions = headless_gz(f'{gz_world}.sdf')
-    else:
-        actions = [IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(os.path.join(pkg_gz, 'launch', 'gz_sim.launch.py')),
-            launch_arguments=[('world', gz_world),
-                              ('setup_path', LaunchConfiguration('setup_path'))])]
+    actions = build_gz_actions(f'{gz_world}.sdf', headless)
 
     robot_spawn = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(pkg_gz, 'launch', 'robot_spawn.launch.py')),

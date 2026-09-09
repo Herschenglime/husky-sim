@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Send a point-to-point navigation goal and report the outcome.
 
-    send_goal.py X Y [YAW_DEG] [--ns a200_0000] [--frame map] [--timeout 180]
+    send_goal.py X Y [YAW_DEG] [--ns a200_0000] [--frame map] [--timeout 180] [--world warehouse]
 
 Reports the result and how close the robot actually got, so a run can be scored
 rather than eyeballed.
@@ -10,69 +10,42 @@ import argparse
 import math
 import sys
 import time
+import subprocess
 
 import rclpy
-from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
-from nav2_msgs.action import NavigateToPose
-from rclpy.action import ActionClient
-from rclpy.node import Node
+from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 
 
-class GoalSender(Node):
-    def __init__(self, ns, frame):
-        super().__init__('send_goal')
-        self.frame = frame
-        action = f'/{ns}/navigate_to_pose' if ns else '/navigate_to_pose'
-        self.client = ActionClient(self, NavigateToPose, action)
-        self.action = action
-        self.feedback = None
+def spawn_marker(world, x, y):
+    if not world:
+        return
 
-    def send(self, x, y, yaw_deg, timeout):
-        if not self.client.wait_for_server(timeout_sec=20.0):
-            print(f'FAIL: no action server at {self.action}')
-            return 1
-        goal = NavigateToPose.Goal()
-        goal.pose.header.frame_id = self.frame
-        goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x = float(x)
-        goal.pose.pose.position.y = float(y)
-        yaw = math.radians(yaw_deg)
-        goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
-        goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
+    # Remove old marker if it exists
+    subprocess.run([
+        'gz', 'service', '-s', f'/world/{world}/remove',
+        '--reqtype', 'gz.msgs.Entity',
+        '--reptype', 'gz.msgs.Boolean',
+        '--timeout', '1000',
+        '--req', 'name: "goal_marker", type: MODEL'
+    ], capture_output=True)
 
-        print(f'goal ({x:.2f}, {y:.2f}, {yaw_deg:.0f} deg) in {self.frame} -> {self.action}')
-        send_future = self.client.send_goal_async(
-            goal, feedback_callback=lambda f: setattr(self, 'feedback', f.feedback))
-        rclpy.spin_until_future_complete(self, send_future, timeout_sec=20.0)
-        handle = send_future.result()
-        if handle is None or not handle.accepted:
-            print('FAIL: goal rejected')
-            return 1
-        print('goal accepted, navigating...')
+    # Spawn new marker
+    sdf = f"""<sdf version="1.7"><model name="goal_marker"><static>true</static><pose>{x} {y} 0.1 0 0 0</pose><link name="link"><visual name="visual"><geometry><sphere><radius>0.2</radius></sphere></geometry><material><ambient>0 1 0 1</ambient><diffuse>0 1 0 1</diffuse></material></visual></link></model></sdf>"""
+    subprocess.run([
+        'gz', 'service', '-s', f'/world/{world}/create',
+        '--reqtype', 'gz.msgs.EntityFactory',
+        '--reptype', 'gz.msgs.Boolean',
+        '--timeout', '1000',
+        '--req', f"sdf: '{sdf}'"
+    ], capture_output=True)
 
-        result_future = handle.get_result_async()
-        start = time.time()
-        while rclpy.ok() and not result_future.done():
-            rclpy.spin_once(self, timeout_sec=0.5)
-            if time.time() - start > timeout:
-                handle.cancel_goal_async()
-                rclpy.spin_once(self, timeout_sec=2.0)
-                print(f'FAIL: timed out after {timeout:.0f} s')
-                self.report_distance()
-                return 1
-        status = result_future.result().status
-        elapsed = time.time() - start
-        ok = status == GoalStatus.STATUS_SUCCEEDED
-        print(f'{"SUCCEEDED" if ok else "FAILED"} after {elapsed:.0f} s (status {status})')
-        self.report_distance()
-        return 0 if ok else 1
 
-    def report_distance(self):
-        if self.feedback is not None:
-            p = self.feedback.current_pose.pose.position
-            print(f'  final pose ({p.x:.2f}, {p.y:.2f}); '
-                  f'distance remaining {self.feedback.distance_remaining:.2f} m')
+def report_distance(feedback):
+    if feedback is not None:
+        p = feedback.current_pose.pose.position
+        print(f'  final pose ({p.x:.2f}, {p.y:.2f}); '
+              f'distance remaining {feedback.distance_remaining:.2f} m')
 
 
 def main():
@@ -82,17 +55,85 @@ def main():
     ap.add_argument('yaw', type=float, nargs='?', default=0.0)
     ap.add_argument('--ns', default='a200_0000')
     ap.add_argument('--frame', default='map')
+    ap.add_argument('--world', default='', help='Gazebo world name for visual marker spawning')
     ap.add_argument('--timeout', type=float, default=180.0)
-    args = ap.parse_args()
-    rclpy.init()
-    node = GoalSender(args.ns, args.frame)
+    ap.add_argument('--use-sim-time', action='store_true', default=None)
+
+    # Filter out ROS 2 specific arguments injected when run via launch Node
     try:
-        rc = node.send(args.x, args.y, args.yaw, args.timeout)
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
+        from rclpy.utilities import remove_ros_args
+        clean_argv = remove_ros_args(args=sys.argv)[1:]
+    except Exception:
+        clean_argv = [a for a in sys.argv[1:] if not a.startswith('--ros-args') and not a.startswith('__node:=') and not a == '-r']
+    args, _ = ap.parse_known_args(clean_argv)
+
+    rclpy.init()
+
+    navigator = BasicNavigator(node_name='send_goal', namespace=args.ns)
+
+    if args.use_sim_time is not None:
+        navigator.set_parameters([
+            rclpy.parameter.Parameter('use_sim_time', rclpy.Parameter.Type.BOOL, args.use_sim_time)
+        ])
+
+    print(f'Waiting for Nav2 to become active in namespace /{args.ns}...')
+    navigator.waitUntilNav2Active(localizer='robot_localization')
+
+    spawn_marker(args.world, args.x, args.y)
+
+    goal_pose = PoseStamped()
+    goal_pose.header.frame_id = args.frame
+    goal_pose.header.stamp = navigator.get_clock().now().to_msg()
+    goal_pose.pose.position.x = float(args.x)
+    goal_pose.pose.position.y = float(args.y)
+    yaw = math.radians(args.yaw)
+    goal_pose.pose.orientation.z = math.sin(yaw / 2.0)
+    goal_pose.pose.orientation.w = math.cos(yaw / 2.0)
+
+    print(f'goal ({args.x:.2f}, {args.y:.2f}, {args.yaw:.0f} deg) in {args.frame}')
+    accepted = navigator.goToPose(goal_pose)
+    if not accepted:
+        print('FAIL: goal rejected')
+        navigator.destroy_node()
+        rclpy.shutdown()
+        sys.exit(1)
+
+    print('goal accepted, navigating...')
+    start = time.time()
+    last_feedback_time = 0.0
+
+    while not navigator.isTaskComplete():
+        now = time.time()
+        feedback = navigator.getFeedback()
+        if feedback and (now - last_feedback_time >= 5.0):
+            last_feedback_time = now
+            print(f'  distance remaining: {feedback.distance_remaining:.2f} m')
+
+        if now - start > args.timeout:
+            print(f'FAIL: timed out after {args.timeout:.0f} s')
+            navigator.cancelTask()
+            report_distance(navigator.getFeedback())
+            navigator.destroy_node()
             rclpy.shutdown()
-    sys.exit(rc)
+            sys.exit(1)
+
+    result = navigator.getResult()
+    elapsed = time.time() - start
+    ok = (result == TaskResult.SUCCEEDED)
+
+    if ok:
+        status_str = 'SUCCEEDED'
+    elif result == TaskResult.CANCELED:
+        status_str = 'CANCELED'
+    else:
+        status_str = 'FAILED'
+
+    print(f'{status_str} after {elapsed:.0f} s (status {navigator.status})')
+    report_distance(navigator.getFeedback())
+
+    navigator.destroy_node()
+    rclpy.shutdown()
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == '__main__':

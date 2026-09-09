@@ -44,6 +44,11 @@ ARGUMENTS = [
     DeclareLaunchArgument('y', default_value='0.0', description='Spawn Y position'),
     DeclareLaunchArgument('z', default_value='0.3', description='Spawn Z position'),
     DeclareLaunchArgument('yaw', default_value='0.0', description='Spawn Yaw orientation (rad)'),
+    DeclareLaunchArgument('run_goal', default_value='false', choices=['true', 'false'],
+                          description='Automatically send a goal after Nav2 is ready.'),
+    DeclareLaunchArgument('goal_x', default_value='0.0', description='Goal X position'),
+    DeclareLaunchArgument('goal_y', default_value='0.0', description='Goal Y position'),
+    DeclareLaunchArgument('goal_yaw', default_value='0.0', description='Goal Yaw orientation (rad)'),
 ]
 
 
@@ -58,6 +63,17 @@ def launch_setup(context, *args, **kwargs):
     map_file = LaunchConfiguration('map').perform(context)
     headless = LaunchConfiguration('headless').perform(context)
     rviz = LaunchConfiguration('rviz').perform(context)
+    run_goal = LaunchConfiguration('run_goal').perform(context).lower() == 'true'
+    goal_x = LaunchConfiguration('goal_x').perform(context)
+    goal_y = LaunchConfiguration('goal_y').perform(context)
+    goal_yaw = LaunchConfiguration('goal_yaw').perform(context)
+
+    # Convert rad to deg since send_goal.py expects degrees
+    import math
+    try:
+        yaw_deg = str(math.degrees(float(goal_yaw)))
+    except ValueError:
+        yaw_deg = '0.0'
 
     # Fall back to nav_worlds/config/ if robot.yaml does not exist in setup_path
     robot_yaml = os.path.join(setup_path, 'robot.yaml')
@@ -195,8 +211,20 @@ def launch_setup(context, *args, **kwargs):
                 'scan_topic': scan_filtered_topic,
             }.items()
         ),
-        LogInfo(msg=f'[a200_point_nav] READY. Send goals with: ros2 run nav_worlds send_goal.py X Y [YAW] --ns {namespace}')
     ]
+
+    if run_goal:
+        nav2_actions.append(LogInfo(msg=f'[a200_point_nav] READY. Automatically sending goal: {goal_x}, {goal_y}, {yaw_deg} deg'))
+        nav2_actions.append(Node(
+            package='nav_worlds',
+            executable='send_goal.py',
+            name='send_goal',
+            parameters=[{'use_sim_time': True}],
+            arguments=[goal_x, goal_y, yaw_deg, '--ns', namespace, '--world', world],
+            output='screen'
+        ))
+    else:
+        nav2_actions.append(LogInfo(msg=f'[a200_point_nav] READY. Send goals with: ros2 run nav_worlds send_goal.py X Y [YAW] --ns {namespace}'))
 
     def on_map_gate_exit(event, context):
         if event.returncode == 0:
