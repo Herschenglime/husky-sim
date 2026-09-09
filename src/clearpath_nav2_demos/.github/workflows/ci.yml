@@ -1,0 +1,36 @@
+name: clearpath_nav2_demos_ci
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *" # every day at midnight
+
+jobs:
+  build_and_test:
+    name: jazzy
+    strategy:
+      matrix:
+        env:
+          - {ROS_DISTRO: jazzy, ROS_REPO: testing}
+          - {ROS_DISTRO: jazzy, ROS_REPO: main}
+      fail-fast: false
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: 'ros-industrial/industrial_ci@master'
+        env: ${{matrix.env}}
+
+  source_build:
+    name: Jazzy Clearpath Source
+    runs-on: ubuntu-latest
+    container:
+      image: rostooling/setup-ros-docker:ubuntu-noble-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ros-tooling/action-ros-ci@v0.4
+        id: action_ros_ci_step
+        with:
+          target-ros2-distro: jazzy
+          package-name: |
+            clearpath_nav2_demos

@@ -1,0 +1,489 @@
+<?xml version='1.0' encoding='ASCII'?>
+<sdf version='1.7'>
+  <world name='warehouse_line'>
+    <physics type="ode">
+      <max_step_size>0.003</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+      <gravity>0 0 -9.8</gravity>
+    </physics>
+    <plugin name='gz::sim::systems::Physics' filename='libgz-sim-physics-system.so'/>
+    <plugin name='gz::sim::systems::UserCommands' filename='libgz-sim-user-commands-system.so'/>
+    <plugin name='gz::sim::systems::SceneBroadcaster' filename='libgz-sim-scene-broadcaster-system.so'/>
+    <plugin name="gz::sim::systems::Sensors" filename="libgz-sim-sensors-system.so">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin name="gz::sim::systems::Imu" filename="libgz-sim-imu-system.so"/>
+    <plugin name="gz::sim::systems::NavSat" filename="libgz-sim-navsat-system.so"/>
+
+    <scene>
+      <ambient>1 1 1 1</ambient>
+      <background>0.3 0.7 0.9 1</background>
+      <shadows>0</shadows>
+      <grid>false</grid>
+    </scene>
+
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>-22.986687</latitude_deg>
+      <longitude_deg>-43.202501</longitude_deg>
+      <elevation>0</elevation>
+      <heading_deg>0</heading_deg>
+    </spherical_coordinates>
+
+    <!-- TODO(rkreinin): Fix lighting so that spawning multiple robots does not crash the sim-->
+    <!-- <light type="directional" name="sun">
+      <cast_shadows>0</cast_shadows>
+      <pose>-5 -3 10 0 0 0</pose>
+      <diffuse>1 1 1 1</diffuse>
+      <specular>1 1 1 1</specular>
+      <direction>0 0 -1</direction>
+    </light> -->
+
+    <model name='ground_plane'>
+      <static>true</static>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry>
+            <plane>
+              <normal>0.0 0.0 1</normal>
+              <size>1 1</size>
+            </plane>
+          </geometry>
+        </collision>
+      </link>
+      <pose>0 0 0 0 0 0</pose>
+    </model>
+
+    <!--
+      Clearpath warehouse + a painted line-following track.
+
+      Verbatim copy of clearpath_gz/worlds/warehouse.sdf (world renamed to
+      `warehouse_line`) with one addition: the `line_track` decal model, below.
+      Regenerate its texture with line_follow_sim/scripts/gen_track_texture.py;
+      the source drawing lives in ~/line_track/materials/textures.
+    -->
+    <!-- Base -->
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/Warehouse
+      </uri>
+      <name>warehouse</name>
+      <pose>0 0 -0.1 0 0 0</pose>
+    </include>
+
+    <!-- Pallet Box Mobile -->
+    <!-- <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/pallet_box_mobile
+      </uri>
+      <name>pallet_box_0</name>
+      <pose>-4 12 0.01 0 0 0</pose>
+      <static>true</static>
+    </include> -->
+
+    <!-- Shelves -->
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/shelf_big
+      </uri>
+      <name>shelf_big_0</name>
+      <pose>-8.5 -13 0 0 -0 0</pose>
+    </include>
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/shelf_big
+      </uri>
+      <name>shelf_big_1</name>
+      <pose>6.5 -13 0 0 -0 0</pose>
+    </include>
+    <!-- shelf_big_2 (was at -1.5 -13) is deliberately absent. The painted
+         track passes 0.60 m from its collision box near (0.15, -9.77), which
+         left only 0.25 m of body margin for a 0.67 m wide a200 - the one spot
+         on the loop a line follower would clip. Every other prop clears the
+         line by >= 0.87 m. -->
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/shelf
+      </uri>
+      <name>shelf_3</name>
+      <pose>13.5 4.5 0 0 -0 0</pose>
+    </include>
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/shelf
+      </uri>
+      <name>shelf_4</name>
+      <pose>10 4.5 0 0 -0 0</pose>
+    </include>
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/shelf
+      </uri>
+      <name>shelf_5</name>
+      <pose>13.5 -21 0 0 -0 0</pose>
+    </include>
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/shelf
+      </uri>
+      <name>shelf_6</name>
+      <pose>13.5 -15 0 0 -0 0</pose>
+    </include>
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/shelf
+      </uri>
+      <name>shelf_7</name>
+      <pose>0.4 -2 0 0 -0 0</pose>
+    </include>
+
+    <!-- Navigation Challenge section -->
+
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/shelf_big
+      </uri>
+      <name>shelf_big_3</name>
+      <pose>3.5 9.5 0 0 0 1.57</pose>
+    </include>
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/shelf_big
+      </uri>
+      <name>shelf_big_4</name>
+      <pose>-1.3 18.5 0 0 0 1.57</pose>
+    </include>
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/shelf
+      </uri>
+      <name>shelf_0</name>
+      <pose>-10 21.5 0 0 -0 1.57</pose>
+    </include>
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/shelf
+      </uri>
+      <name>shelf_1</name>
+      <pose>-7 23.6 0 0 -0 1.57</pose>
+    </include>
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/MovAi/models/shelf
+      </uri>
+      <name>shelf_2</name>
+      <pose>-4 21.5 0 0 -0 1.57</pose>
+    </include>
+
+    <!-- Barriers -->
+
+    <include>
+      <uri>
+      https://fuel.gazebosim.org/1.0/OpenRobotics/models/Jersey Barrier
+      </uri>
+      <name>barrier_0</name>
+      <pose>-10.4 14.75 0 0 0 1.57</pose>
+    </include>
+    <include>
+      <uri>
+      https://fuel.gazebosim.org/1.0/OpenRobotics/models/Jersey Barrier
+      </uri>
+      <name>barrier_1</name>
+      <pose>-10.4 10.5 0 0 0 1.57</pose>
+    </include>
+    <include>
+      <uri>
+      https://fuel.gazebosim.org/1.0/OpenRobotics/models/Jersey Barrier
+      </uri>
+      <name>barrier_2</name>
+      <pose>-10.4 6.5 0 0 0 1.57</pose>
+    </include>
+    <include>
+      <uri>
+      https://fuel.gazebosim.org/1.0/OpenRobotics/models/Jersey Barrier
+      </uri>
+      <name>barrier_3</name>
+      <pose>-12.85 4.85 0 0 0 0</pose>
+    </include>
+
+    <!-- Chairs -->
+
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/Chair
+      </uri>
+      <name>chair_0</name>
+      <pose>14.3 -5.5 0 0 -0 3</pose>
+    </include>
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/Chair
+      </uri>
+      <name>chair_1</name>
+      <pose>14.3 -4 0 0 -0 -3</pose>
+    </include>
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/foldable_chair
+      </uri>
+      <name>fchair_0</name>
+      <pose>-11.5 6.4 0 0 -0 -1.8</pose>
+    </include>
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/foldable_chair
+      </uri>
+      <name>fchair1</name>
+      <pose>-14 6.5 0 0 -0 1.9</pose>
+    </include>
+
+    <!-- Table -->
+
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/Table
+      </uri>
+      <name>table0</name>
+      <pose>-12.7 6.5 0 0 0 0</pose>
+    </include>
+
+    <!-- People -->
+
+    <!-- <include>
+      <uri>
+      https://fuel.gazebosim.org/1.0/OpenRobotics/models/Rescue Randy Sitting
+      </uri>
+      <name>Person 0 - Sitting</name>
+      <pose>14.65 -10 0 0 0 -1.57</pose>
+    </include> -->
+
+    <include>
+      <uri>
+      https://fuel.gazebosim.org/1.0/OpenRobotics/models/MaleVisitorOnPhone
+      </uri>
+      <name>Person 1 - Standing</name>
+      <pose>1 -1 0 0 0 1.57</pose>
+    </include>
+
+    <include>
+      <uri>
+      https://fuel.gazebosim.org/1.0/plateau/models/Casual female
+      </uri>
+      <name>Person 2 - Walking</name>
+      <pose>-12 15 0 0 0 0</pose>
+    </include>
+
+    <!-- Line-following track.
+
+         Visual only (no collision) and 1 cm above the warehouse floor, so it
+         cannot collide with anything and cannot z-fight the floor mesh. The
+         quad spans the floor exactly - x [-15, 15], y [-25, 25] - matching the
+         1006 x 1674 px drawing at 0.0298 m/px, which is the scale it was drawn
+         at. Painted width is 0.15 m.
+
+         Clearance to the existing props was checked against this layout: the
+         nearest is barrier_2 at 1.39 m from the painted line, so a 0.99 m wide
+         Husky tracking the line stays clear of every shelf, barrier and chair.
+    -->
+    <include>
+      <uri>model://line_track</uri>
+      <name>line_track</name>
+      <pose>0 0 0.01 0 0 0</pose>
+    </include>
+
+
+    <!-- OBSTACLE COURSE (generated by place_obstacles.py) -->
+    <model name='obstacle_0'>
+      <static>true</static>
+      <pose>-5.099 14.486 0.350 0 0 0.0000</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+          <material>
+            <!-- Red on purpose: the follower thresholds yellow at OpenCV hue
+                 18-38 and red sits at hue 0, so a box is never seen as track. -->
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name='obstacle_1'>
+      <static>true</static>
+      <pose>4.145 13.262 0.350 0 0 0.0000</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+          <material>
+            <!-- Red on purpose: the follower thresholds yellow at OpenCV hue
+                 18-38 and red sits at hue 0, so a box is never seen as track. -->
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name='obstacle_2'>
+      <static>true</static>
+      <pose>7.753 2.061 0.350 0 0 -0.1491</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+          <material>
+            <!-- Red on purpose: the follower thresholds yellow at OpenCV hue
+                 18-38 and red sits at hue 0, so a box is never seen as track. -->
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name='obstacle_3'>
+      <static>true</static>
+      <pose>3.429 -4.062 0.350 0 0 -1.9883</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+          <material>
+            <!-- Red on purpose: the follower thresholds yellow at OpenCV hue
+                 18-38 and red sits at hue 0, so a box is never seen as track. -->
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name='obstacle_4'>
+      <static>true</static>
+      <pose>1.342 -14.904 0.350 0 0 -1.0868</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+          <material>
+            <!-- Red on purpose: the follower thresholds yellow at OpenCV hue
+                 18-38 and red sits at hue 0, so a box is never seen as track. -->
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name='obstacle_5'>
+      <static>true</static>
+      <pose>-1.133 -22.730 0.350 0 0 3.1416</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+          <material>
+            <!-- Red on purpose: the follower thresholds yellow at OpenCV hue
+                 18-38 and red sits at hue 0, so a box is never seen as track. -->
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name='obstacle_6'>
+      <static>true</static>
+      <pose>-5.278 -14.217 0.350 0 0 1.5708</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+          <material>
+            <!-- Red on purpose: the follower thresholds yellow at OpenCV hue
+                 18-38 and red sits at hue 0, so a box is never seen as track. -->
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name='obstacle_7'>
+      <static>true</static>
+      <pose>-10.109 -1.643 0.350 0 0 3.1416</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+          <material>
+            <!-- Red on purpose: the follower thresholds yellow at OpenCV hue
+                 18-38 and red sits at hue 0, so a box is never seen as track. -->
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name='obstacle_8'>
+      <static>true</static>
+      <pose>-8.499 3.554 0.350 0 0 0.0499</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+          <material>
+            <!-- Red on purpose: the follower thresholds yellow at OpenCV hue
+                 18-38 and red sits at hue 0, so a box is never seen as track. -->
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name='obstacle_9'>
+      <static>true</static>
+      <pose>-3.847 6.213 0.350 0 0 -3.0364</pose>
+      <link name='link'>
+        <collision name='collision'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+        </collision>
+        <visual name='visual'>
+          <geometry><box><size>0.5 0.5 0.7</size></box></geometry>
+          <material>
+            <!-- Red on purpose: the follower thresholds yellow at OpenCV hue
+                 18-38 and red sits at hue 0, so a box is never seen as track. -->
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>

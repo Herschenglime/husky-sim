@@ -1,0 +1,85 @@
+# Wildcard node key so these apply whatever namespace the node is launched into.
+/**:
+  ros__parameters:
+    use_sim_time: true
+
+
+    image_topic: /a200_0000/sensors/camera_0/color/image
+    scan_topic: /a200_0000/sensors/lidar2d_0/scan
+    odom_topic: /a200_0000/platform/odom
+    cmd_topic: /a200_0000/cmd_vel
+    control_rate: 20.0
+
+    # Yellow paint under warehouse lighting. OpenCV hue is 0-179.
+    hue_min: 18
+    hue_max: 38
+    sat_min: 120
+    val_min: 60
+
+    # Bottom 45% of the frame only - above that the camera sees the warehouse's
+    # own yellow hazard tape and shelving, which are not the track.
+    roi_top: 0.55
+    roi_bottom: 0.85
+    min_area_px: 300
+
+    forward_speed: 0.6
+    k_steer: 1.5
+    max_angular: 1.2
+    curve_slowdown: 0.6
+
+    detection_timeout: 0.7
+    lost_coast_sec: 0.5
+    search_angular: 0.5
+    search_limit_deg: 100.0
+    align_limit_deg: 90.0
+    travel_yaw_max_age: 15.0
+
+    # Obstacle avoidance off the 2D lidar.
+    #
+    # These four are one interlocking set - changing any without the others
+    # deadlocks the detour, which is what happened:
+    #   lateral_offset (1.0) minus the box half-width (0.25) means a clean pass
+    #   brings the box to 0.75 m. Both guards MUST sit below that, or they fire
+    #   during a successful pass and forbid the forward motion the swing-out
+    #   needs to build the offset in the first place. The robot then only
+    #   rotates, times out, and re-triggers ever closer: 1.59, 1.09, 0.69, 0.48,
+    #   0.24, 0.14 m. out_heading (55 deg) sets how much forward room the swing
+    #   needs - 0.86 m, against the 1.6 m of warning obstacle_trigger gives.
+    #
+    # corridor_half is the half-width of the corridor swept ahead. The a200 is
+    # 0.67 m wide, so 0.45 m leaves ~0.12 m of margin per side. It must stay
+    # well under the track's 0.87 m minimum clearance to warehouse props, or
+    # the robot detours around the scenery instead of around the boxes.
+    corridor_half: 0.45
+    obstacle_trigger: 1.6
+
+    # bug0 boundary following (constants from bug0_a300, same chassis).
+    wall_distance: 0.70
+    wall_dist_kp: 1.6
+    wall_align_kp: 1.1
+    wall_beam_half_deg: 8.0
+    wall_lost_distance: 2.4
+    wall_speed: 0.35
+    wall_reacquire_turn: 0.50
+    front_stop_distance: 0.85
+    front_sector_deg: 35.0
+    front_clear_distance: 2.0
+    # 0.60 measured best. Raising it to 1.00 made the robot follow the box
+    # too far round to satisfy the leave test, so it timed out instead of
+    # leaving: 13 of 16 encounters abandoned, coverage 82% -> 5%.
+    # Deliberately short. This is a hard gate on leaving, so anything the
+    # robot cannot always achieve becomes a livelock: at 1.50 m a robot pinned
+    # between a box and a wall could never satisfy it, so it timed out and
+    # re-entered immediately - 28 of 30 encounters abandoned, 44.9 m travelled
+    # in 850 s. It only has to be far enough not to re-latch the same box.
+    min_distance_from_hit: 0.60
+    wall_follow_timeout: 25.0
+    # 0 reproduces the best measured run. A 2 s re-arm was tried to damp
+    # re-detections and made things worse in combination with the above.
+    # Non-zero so a timed-out encounter cannot instantly re-enter and spin
+    # on the same obstacle for ever.
+    rearm_sec: 3.0
+    proximity_arc_deg: 70.0
+    proximity_stop: 0.4
+    k_heading: 1.5
+    scan_timeout: 1.0

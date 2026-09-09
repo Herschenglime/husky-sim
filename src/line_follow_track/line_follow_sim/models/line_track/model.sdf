@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<sdf version="1.7">
+  <!-- Line-following track decal for the Fuel `Warehouse` model.
+
+       The texture is generated from the hand-drawn albedo by
+       line_follow_sim/scripts/gen_track_texture.py: bright yellow where the
+       stroke is, fully transparent everywhere else, so the warehouse floor
+       shows through untouched.
+
+       Two deliberate properties:
+       - No <collision>. The paint is paint; the robot drives straight over it
+         and nothing in the physics engine knows it exists.
+       - Included at z = 0.01 in the world, i.e. 1 cm proud of the warehouse
+         floor (whose surface sits at z ~ 0.0). Coplanar geometry z-fights;
+         1 cm is far more than the depth-buffer needs and far less than the
+         Husky's ground clearance, so it is invisible to the robot's driving.
+  -->
+  <model name="line_track">
+    <static>true</static>
+    <link name="track_link">
+      <visual name="track_visual">
+        <cast_shadows>false</cast_shadows>
+        <geometry>
+          <mesh>
+            <uri>meshes/track_plane.obj</uri>
+            <scale>1 1 1</scale>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0 0 0 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>materials/textures/track_yellow.png</albedo_map>
+              <metalness>0.0</metalness>
+              <roughness>0.9</roughness>
+            </metal>
+          </pbr>
+        </material>
+        <transparency>0.0</transparency>
+      </visual>
+    </link>
+  </model>
+</sdf>

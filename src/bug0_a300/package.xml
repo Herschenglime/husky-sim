@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>bug0_a300</name>
+  <version>0.0.1</version>
+  <description>Bug0 navigation controller for the Clearpath A300 Observer, ported from bug0_turtlebot4. Uses the 3D lidar (flattened to a LaserScan), TF pose, and namespaced cmd_vel.</description>
+  <maintainer email="vaishnavr27@gmail.com">Vaishnav Ramesh</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+
+  <exec_depend>pointcloud_to_laserscan</exec_depend>
+  <exec_depend>turtlebot4_bag_recorder</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

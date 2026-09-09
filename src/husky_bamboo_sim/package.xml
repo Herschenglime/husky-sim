@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>husky_bamboo_sim</name>
+  <version>1.0.0</version>
+  <description>Bamboo field world and Clearpath robot.yaml for Husky A200 simulation.</description>
+  <maintainer email="dev@example.com">Husky Bamboo Team</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>clearpath_gz</exec_depend>
+  <exec_depend>clearpath_config</exec_depend>
+  <exec_depend>clearpath_generator_gz</exec_depend>
+  <exec_depend>clearpath_generator_common</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>clearpath_control</exec_depend>
+  <exec_depend>clearpath_nav2_demos</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_amcl</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>line_follow_sim</name>
+  <version>0.1.0</version>
+  <description>
+    Clearpath Husky warehouse world with a bright yellow painted line track for
+    camera-based line following.
+  </description>
+  <maintainer email="nicklausw2006@gmail.com">nick</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>clearpath_gz</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <!-- ensure_controllers.py asks controller_manager what is already running. -->
+  <exec_depend>controller_manager_msgs</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>clearpath_config</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

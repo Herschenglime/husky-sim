@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>platform_bag_recorder</name>
+  <version>0.1.0</version>
+  <description>
+    Rosbag2 recorder for the Clearpath a200 and the Unitree go1: laser scans
+    (2D and 3D), camera images (compressed when published), TF, odometry,
+    cmd_vel and IMU. Records whatever the platform actually publishes.
+  </description>
+  <maintainer email="nicklausw2006@gmail.com">nick</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rosbag2_py</exec_depend>
+  <exec_depend>rosidl_runtime_py</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
