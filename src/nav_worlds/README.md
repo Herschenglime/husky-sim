@@ -11,9 +11,17 @@ This package supplies the parts that were missing to make those work here.
 ## Run
 
 ```bash
-ros2 run nav_worlds bringup.sh warehouse          # SLAM, builds a map as it drives
-ros2 run nav_worlds bringup.sh warehouse --localize   # AMCL against maps/warehouse.yaml
+# Point-to-point goal navigation for A200 with SLAM (builds a map as it drives):
+ros2 launch nav_worlds a200_point_nav.launch.py world:=warehouse
+
+# With AMCL localization against a saved map:
+ros2 launch nav_worlds a200_point_nav.launch.py world:=warehouse slam:=false
+
+# With Gazebo GUI enabled:
+ros2 launch nav_worlds a200_point_nav.launch.py world:=warehouse headless:=false
 ```
+
+*(Note: `ros2 run nav_worlds bringup.sh [world]` forwards to `a200_point_nav.launch.py`)*
 
 Then send goals, in the `map` frame:
 
@@ -98,11 +106,13 @@ which the EKF needs for `odom -> base_link`.
 
 | Path | Description |
 | --- | --- |
-| `scripts/bringup.sh` | Staged bringup: world, robot, SLAM or AMCL, Nav2. |
+| `launch/a200_point_nav.launch.py` | Native ROS 2 point-to-point navigation bringup (sim + SLAM/AMCL + Nav2). |
+| `scripts/readiness_gate.py` | Readiness gate ensuring simulation & controllers are active before Nav2 starts. |
+| `scripts/bringup.sh` | Backward-compatibility forwarder to `a200_point_nav.launch.py`. |
 | `scripts/send_goal.py` | Send a goal and report the outcome. |
 | `launch/sim.launch.py` | World + robot, without the `choices` restriction. |
-| `launch/husky_nav.launch.py` | Single-shot launch. Convenient, but uses fixed delays - prefer `bringup.sh` on heavy worlds. |
+| `launch/husky_nav.launch.py` | Legacy single-shot launch (uses fixed delays). |
 | `scripts/scan_self_filter.py` | Drops laser returns landing inside the footprint. |
 | `config/a200_sample.yaml` | a200 config used for navigation and teleop: sensor arch, realsense, 2D and 3D lidar. Copy to `~/clearpath/robot.yaml`. |
 | `worlds/depot.sdf` | Depot with the Sensors and Imu systems enabled. |
-| `maps/` | Saved maps for `--localize`. |
+| `maps/` | Saved maps for localization mode. |
