@@ -10,3 +10,4 @@ log/
 .vscode/
 __pycache__/
 *.pyc
+.ros_log/
