@@ -170,6 +170,9 @@ def launch_setup(context, *args, **kwargs):
             'namespace': namespace,
             'stage': 'map',
             'slam': slam,
+            'initial_x': LaunchConfiguration('x'),
+            'initial_y': LaunchConfiguration('y'),
+            'initial_yaw': LaunchConfiguration('yaw'),
             'use_sim_time': True,
             'timeout_sec': 120.0
         }],

@@ -21,6 +21,7 @@ Stage 2 ('map'):
 Exits with code 0 once all gates for the requested stage pass, or code 1 on timeout.
 """
 
+import math
 import subprocess
 import sys
 import time
@@ -53,6 +54,9 @@ class ReadinessGate(Node):
         self.declare_parameter('required_controllers',
                                ['joint_state_broadcaster', 'platform_velocity_controller'])
         self.declare_parameter('slam', True)
+        self.declare_parameter('initial_x', 0.0)
+        self.declare_parameter('initial_y', 0.0)
+        self.declare_parameter('initial_yaw', 0.0)
 
         self.ns = self.get_parameter('namespace').value.strip('/')
         self.stage = self.get_parameter('stage').value.strip().lower()
@@ -244,17 +248,27 @@ class ReadinessGate(Node):
 
         # If localization mode (AMCL), publish seed initialpose at spawn
         if not self.slam:
-            self.get_logger().info('Seeding initial pose at spawn (0.0, 0.0)...')
+            init_x = float(self.get_parameter('initial_x').value)
+            init_y = float(self.get_parameter('initial_y').value)
+            init_yaw = float(self.get_parameter('initial_yaw').value)
+            self.get_logger().info(
+                f'Seeding initial pose at spawn ({init_x:.3f}, {init_y:.3f}, yaw={init_yaw:.3f} rad)...'
+            )
             init_topic = f'/{self.ns}/initialpose' if self.ns else '/initialpose'
             pub_init = self.create_publisher(PoseWithCovarianceStamped, init_topic, 10)
 
             msg = PoseWithCovarianceStamped()
             msg.header.stamp = self.get_clock().now().to_msg()
             msg.header.frame_id = 'map'
-            msg.pose.pose.position.x = 0.0
-            msg.pose.pose.position.y = 0.0
+            msg.pose.pose.position.x = init_x
+            msg.pose.pose.position.y = init_y
             msg.pose.pose.position.z = 0.0
-            msg.pose.pose.orientation.w = 1.0
+            msg.pose.pose.orientation.z = math.sin(init_yaw / 2.0)
+            msg.pose.pose.orientation.w = math.cos(init_yaw / 2.0)
+            # Covariance matrix (diagonal entries for x, y, yaw)
+            msg.pose.covariance[0] = 0.25   # x variance
+            msg.pose.covariance[7] = 0.25   # y variance
+            msg.pose.covariance[35] = 0.068 # yaw variance (~15 deg std dev)
 
             for _ in range(5):
                 pub_init.publish(msg)
