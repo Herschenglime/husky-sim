@@ -60,7 +60,10 @@ ARGUMENTS = [
                           description='Clearpath setup path'),
     DeclareLaunchArgument('scan_topic',
                           default_value='',
-                          description='Override the default 2D laserscan topic')
+                          description='Override the default 2D laserscan topic'),
+    DeclareLaunchArgument('nav2_yaml',
+                          default_value='',
+                          description='Explicit path to a Nav2 parameter yaml file')
 ]
 
 
@@ -87,11 +90,15 @@ def launch_setup(context, *args, **kwargs):
     if len(eval_scan_topic) == 0:
         eval_scan_topic = f'/{namespace}/sensors/lidar2d_0/scan'
 
-    file_parameters = PathJoinSubstitution([
-        pkg_clearpath_nav2_demos,
-        'config',
-        platform_model,
-        'nav2.yaml'])
+    nav2_yaml = LaunchConfiguration('nav2_yaml').perform(context)
+    if nav2_yaml and os.path.exists(nav2_yaml):
+        file_parameters = nav2_yaml
+    else:
+        file_parameters = PathJoinSubstitution([
+            pkg_clearpath_nav2_demos,
+            'config',
+            platform_model,
+            'nav2.yaml'])
 
     rewritten_parameters = RewrittenYaml(
         source_file=file_parameters,

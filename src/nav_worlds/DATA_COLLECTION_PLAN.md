@@ -24,41 +24,43 @@ We will create a script that reads any given static map, identifies free space, 
 
 ### 2. Data Logging
 
-We will create a lightweight node to log state variables directly to CSV for quick ML iteration without parsing rosbags.
+We created a lightweight node to log state variables and 2D LiDAR scans directly to JSON Lines (`.jsonl`) for quick ML iteration without parsing rosbags.
 
 #### [NEW] [log_state.py](file:///home/pgrau/ros2_ws/src/nav_worlds/scripts/log_state.py)
-- **Extensibility**: Accepts `--odom_topic` and `--cmd_vel_topic` arguments to support different robots (e.g. `/a300_0000/odom`).
-- Subscribes to the specified odometry and velocity topics.
-- Writes a CSV file containing: `timestamp`, `pose_x`, `pose_y`, `pose_yaw`, `twist_linear_x`, `twist_angular_z`.
-- Designed to run in the background and gracefully close the CSV on `SIGINT`.
+- **Extensibility**: Accepts `--odom_topic`, `--cmd_vel_topic`, and `--scan_topic` arguments to support different robots (e.g. `/a200_0000` or `/a300_0000`).
+- **TwistStamped Support**: Subscribes to `geometry_msgs/msg/TwistStamped` by default to avoid DDS multi-type conflicts in ROS 2 Jazzy, with an optional `--unstamped_cmd_vel` flag for legacy robots.
+- Writes a `.jsonl` file containing: `timestamp`, `x`, `y`, `yaw`, `vx`, `wz`, and the full 720-beam `scan` array.
+- Driven by the `LaserScan` callback to log synchronized snapshots whenever new LiDAR packets arrive.
+- Gracefully closes output on `SIGINT`.
 
 ### 3. Sweep Orchestration & Data Organization
 
-We will create the main orchestrator script that loops through the generated waypoints, drives the simulation lifecycle, and organizes the output data.
+We created the main orchestrator script that loops through the generated waypoints, drives the simulation lifecycle, and organizes the output data.
 
 #### [NEW] [run_sweep.py](file:///home/pgrau/ros2_ws/src/nav_worlds/scripts/run_sweep.py)
-- **Real-Time Factor (RTF)**: For the initial test runs, the Gazebo physics cap will be kept near real-time (RTF ~ 1.0) to monitor performance and avoid starving system resources before pushing it faster.
-- **Extensibility**: Accepts CLI arguments for `--namespace` (e.g. `a200_0000` or `a300_0000`), `--launch_pkg`, `--launch_file`, and a `--topics` list for the bagger. This ensures we can easily swap to the A300 platform and 3D lidar later without changing the orchestrator code.
-- **Data Organization**: Creates a timestamped parent directory for the entire sweep, containing the metadata and a sub-folder for each run:
+- **Real-Time Factor (RTF)**: Gazebo physics cap is maintained near real-time (RTF ~ 1.0) for initial stability.
+- **Modular Runner Architecture**: Structured with a base class `SimulationRunner` (managing waypoints, output directories, and sweep metadata) and `ColdRestartRunner` (managing cold restart bringup, bag recording, and process teardown). This design isolates the execution loop so that future in-process "Warm Resets" can be added as a subclass.
+- **Static Nav2 Costmap Support**: Routes navigation to `src/nav_worlds/config/nav2_static.yaml` (`rolling_window: false`) to avoid out-of-bounds trajectory aborts on distant waypoints (> 10m).
+- **Visual Debugging**: Accepts `--gui` (Gazebo GUI via `headless:=false`) and `--rviz` (RViz visualization) for interactive debugging.
+- **Data Organization**: Creates a timestamped parent directory for the entire sweep under `data/dataset_output/`:
   ```text
-  dataset_output/
+  data/dataset_output/
     sweep_YYYYMMDD_HHMMSS/
-      sweep_config.json        # Record of parameters used (map, robot, namespace, etc.)
-      waypoints.csv            # Copy of the generated waypoints
+      sweep_metadata.csv       # Summary of each trajectory run (run_id, start, goal, status, elapsed_time)
       run_000/
-        bag/                   # The rosbag directory (minimal topics: odom, tf, cmd_vel, scan)
-        state.csv              # The lightweight state log
+        bag/                   # The MCAP rosbag directory (odom, tf, tf_static, cmd_vel, scan_filtered, plan, clock)
+        state.jsonl            # Synchronized telemetry (pose, twist, 720-beam scan array)
       run_001/
         ...
   ```
 - **Lifecycle Management**: For each pair in the waypoint list:
-  1. Starts the specified launch file via `subprocess` (headless).
-  2. Spawns `ros2 bag record` to capture the requested topics into `run_XXX/bag/`.
-  3. Spawns `log_state.py` to capture `run_XXX/state.csv`.
-  4. Monitors the launch process stdout for the `READY` banner.
-  5. Spawns `send_goal.py END_X END_Y --ns <namespace>` and waits for it to exit (success or timeout).
-  6. Sends `SIGINT` to teardown the simulation, bagger, and logger cleanly.
-  7. Pauses briefly to ensure ports/processes are freed before the next iteration.
+  1. Executes orphan cleanup (`cleanup_orphans()`) terminating lingering `gz sim` and ROS 2 nodes while preserving runner PIDs.
+  2. Spawns `ros2 bag record` to capture minimal topics into `run_XXX/bag/`.
+  3. Spawns `log_state.py` to capture `run_XXX/state.jsonl`.
+  4. Launches `a200_point_nav.launch.py` with the trajectory's start and goal coordinates (`run_goal:=true`, `slam:=false`).
+  5. Waits for the launch process to exit on goal arrival (or triggers timeout if stuck).
+  6. Sends `SIGTERM` / `SIGKILL` to bagger and logger processes.
+  7. Pauses briefly (2.0s) to ensure sockets and ports are freed before the next iteration.
 
 ## Verification Plan
 

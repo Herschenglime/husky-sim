@@ -12,6 +12,8 @@ install(PROGRAMS
   scripts/scan_self_filter.py
   scripts/readiness_gate.py
   scripts/generate_waypoints.py
+  scripts/log_state.py
+  scripts/run_sweep.py
   DESTINATION lib/${PROJECT_NAME})
 
 ament_package()

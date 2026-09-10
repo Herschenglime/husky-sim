@@ -3,7 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, TwistStamped
 from sensor_msgs.msg import LaserScan
 import argparse
 import json
@@ -12,7 +12,7 @@ import sys
 import os
 
 class StateLogger(Node):
-    def __init__(self, odom_topic, cmd_vel_topic, scan_topic, output_file):
+    def __init__(self, odom_topic, cmd_vel_topic, scan_topic, output_file, stamped_cmd_vel=True):
         super().__init__('state_logger')
         
         self.set_parameters([
@@ -36,19 +36,24 @@ class StateLogger(Node):
         
         self.odom_sub = self.create_subscription(
             Odometry, odom_topic, self.odom_cb, 10)
+        
+        cmd_vel_msg_type = TwistStamped if stamped_cmd_vel else Twist
         self.cmd_vel_sub = self.create_subscription(
-            Twist, cmd_vel_topic, self.cmd_vel_cb, 10)
+            cmd_vel_msg_type, cmd_vel_topic, self.cmd_vel_cb, 10)
         self.scan_sub = self.create_subscription(
             LaserScan, scan_topic, self.scan_cb, qos_profile_sensor_data)
 
         self.get_logger().info(f"State logger initialized. Writing to {self.output_file}")
-        self.get_logger().info(f"Topics: odom={odom_topic}, cmd_vel={cmd_vel_topic}, scan={scan_topic}")
+        self.get_logger().info(f"Topics: odom={odom_topic}, cmd_vel={cmd_vel_topic} (type={'TwistStamped' if stamped_cmd_vel else 'Twist'}), scan={scan_topic}")
 
     def odom_cb(self, msg: Odometry):
         self.latest_odom = msg
 
-    def cmd_vel_cb(self, msg: Twist):
-        self.latest_cmd_vel = msg
+    def cmd_vel_cb(self, msg):
+        if hasattr(msg, 'twist'):
+            self.latest_cmd_vel = msg.twist
+        else:
+            self.latest_cmd_vel = msg
 
     def get_yaw_from_quaternion(self, q):
         # standard euler from quaternion for yaw
@@ -116,6 +121,7 @@ def main(args=None):
     parser.add_argument('--cmd_vel_topic', type=str, default='/cmd_vel', help='Command velocity topic')
     parser.add_argument('--scan_topic', type=str, default='/scan', help='LaserScan topic')
     parser.add_argument('--output', type=str, default='state.jsonl', help='Output JSONL file')
+    parser.add_argument('--unstamped_cmd_vel', action='store_true', help='Subscribe to Twist instead of TwistStamped')
     
     # Ignore unknown args (useful if launch system passes extra args)
     parsed_args, unknown = parser.parse_known_args(sys.argv[1:])
@@ -126,7 +132,8 @@ def main(args=None):
         odom_topic=parsed_args.odom_topic,
         cmd_vel_topic=parsed_args.cmd_vel_topic,
         scan_topic=parsed_args.scan_topic,
-        output_file=parsed_args.output
+        output_file=parsed_args.output,
+        stamped_cmd_vel=not parsed_args.unstamped_cmd_vel
     )
     
     try:

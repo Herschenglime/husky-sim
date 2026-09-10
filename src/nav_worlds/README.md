@@ -33,6 +33,31 @@ ros2 run nav_worlds send_goal.py 4.0 2.0 90       # x, y, yaw in degrees
 `send_goal.py` reports SUCCEEDED/FAILED with the time taken and how close the
 robot actually got, so a run can be scored rather than eyeballed.
 
+### Automated Simulation Sweeps (Dataset Collection)
+
+To collect reproducible datasets (ROS 2 MCAP bags and synchronized `.jsonl` telemetry logs) over batches of independent trajectories:
+
+```bash
+# 1. Sample reachable, collision-free waypoints from a static map:
+ros2 run nav_worlds generate_waypoints.py \
+  --map-yaml $(ros2 pkg prefix clearpath_nav2_demos)/share/clearpath_nav2_demos/maps/warehouse.yaml \
+  --seed 42 -n 10 -o data/warehouse_waypoints.csv
+
+# 2. Run automated headless simulation sweep:
+ros2 run nav_worlds run_sweep.py \
+  --waypoints data/warehouse_waypoints.csv \
+  --max_runs 3
+
+# 3. Visual Debugging Mode (Gazebo GUI and RViz):
+# (Requires unsandboxed execution per AGENTS.md for host X11 display socket access)
+ros2 run nav_worlds run_sweep.py \
+  --waypoints data/warehouse_waypoints.csv \
+  --gui \
+  --rviz
+```
+
+Outputs are structured under `data/dataset_output/sweep_YYYYMMDD_HHMMSS/` containing `sweep_metadata.csv`, and per-run folders with `state.jsonl` (time, pose, twist, full 720-beam scan) and `bag/`.
+
 Worlds: `warehouse`, `office`, `construction`, `solar_farm`, `orchard`,
 `pipeline` come from `clearpath_gz`; `depot` is carried here.
 
@@ -102,17 +127,32 @@ Without it the 2D lidar publishes nothing at all, so SLAM builds no map and Nav2
 has nothing to plan on. `worlds/depot.sdf` enables `Sensors` and adds `Imu`,
 which the EKF needs for `odom -> base_link`.
 
+**The default global costmap rejects goals outside a 10-meter radius.**
+Clearpath's default `a200/nav2.yaml` sets `global_costmap.rolling_window: true`
+with dimensions $20\text{ m} \times 20\text{ m}$. Because the rolling window is
+centered on the robot, any goal exceeding $10\text{ m}$ Euclidean distance from
+the start pose is instantly rejected with `"Goal Coordinates was outside bounds"`.
+Rather than mutating the default demo configuration, `config/nav2_static.yaml`
+provides a dedicated duplicate with `rolling_window: false`. When navigating
+against static maps (`slam:=false`), `a200_point_nav.launch.py` automatically
+routes to `nav2_static.yaml`, expanding the global costmap to the full map extent.
+
 ## Layout
 
 | Path | Description |
 | --- | --- |
 | `launch/a200_point_nav.launch.py` | Native ROS 2 point-to-point navigation bringup (sim + SLAM/AMCL + Nav2). |
+| `scripts/run_sweep.py` | Automated data collection orchestrator (cold restart lifecycle, rosbag + JSONL logging). |
+| `scripts/generate_waypoints.py` | Deterministic free-space waypoint sampler with obstacle clearance and reachability checks. |
+| `scripts/log_state.py` | Synchronized telemetry logger (pose, twist, 720-beam scan array) dumping to JSON Lines. |
 | `scripts/readiness_gate.py` | Readiness gate ensuring simulation & controllers are active before Nav2 starts. |
 | `scripts/bringup.sh` | Backward-compatibility forwarder to `a200_point_nav.launch.py`. |
 | `scripts/send_goal.py` | Send a goal and report the outcome. |
 | `launch/sim.launch.py` | World + robot, without the `choices` restriction. |
 | `launch/husky_nav.launch.py` | Legacy single-shot launch (uses fixed delays). |
 | `scripts/scan_self_filter.py` | Drops laser returns landing inside the footprint. |
+| `config/nav2_static.yaml` | Static-map Nav2 configuration with global costmap rolling window disabled. |
 | `config/a200_sample.yaml` | a200 config used for navigation and teleop: sensor arch, realsense, 2D and 3D lidar. Copy to `~/clearpath/robot.yaml`. |
 | `worlds/depot.sdf` | Depot with the Sensors and Imu systems enabled. |
 | `maps/` | Saved maps for localization mode. |
+| `doc/SIMULATION_SWEEP.md` | Detailed architectural design, failure modes, and decisions for the sweep pipeline. |

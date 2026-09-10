@@ -3,6 +3,11 @@
 Replaces the legacy bringup.sh script with a native, event-driven ROS 2 launch
 file. Staged using readiness_gate to ensure simulation stability before launching
 SLAM and Nav2.
+
+NOTE: When `run_goal:=true` is used, this launch file is designed to automatically
+self-terminate gracefully once the goal is reached (or fails/times out) via the
+`send_goal` node. Future "Warm Reset" implementations that keep Gazebo running
+will likely require a different launch file configuration or lifecycle setup.
 """
 
 import os
@@ -201,16 +206,22 @@ def launch_setup(context, *args, **kwargs):
     )
 
     # 5. Stage 2: Nav2 stack (launched only once map is active)
+    nav2_launch_args = {
+        'use_sim_time': 'true',
+        'setup_path': setup_path,
+        'scan_topic': scan_filtered_topic,
+    }
+    if not slam:
+        nav2_static_config = os.path.join(pkg_nav_worlds, 'config', 'nav2_static.yaml')
+        if os.path.exists(nav2_static_config):
+            nav2_launch_args['nav2_yaml'] = nav2_static_config
+
     nav2_actions = [
         LogInfo(msg='[a200_point_nav] Map active. Launching Nav2 stack...'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(pkg_clearpath_nav2_demos, 'launch', 'nav2.launch.py')),
-            launch_arguments={
-                'use_sim_time': 'true',
-                'setup_path': setup_path,
-                'scan_topic': scan_filtered_topic,
-            }.items()
+            launch_arguments=nav2_launch_args.items()
         ),
     ]
 

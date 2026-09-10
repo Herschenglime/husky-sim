@@ -68,6 +68,27 @@ flowchart TD
 * **The Problem:** Increasing Gazebo's Real-Time Factor (RTF $\gg 1$) too early can starve CPU resources, causing the controller manager spawner or SLAM toolbox lifecycle transitions to fail during mesh loading.
 * **The Design:** Initial validation and sweeps are capped near RTF $\sim 1.0$. Once process stability is proven, physics update rates can be dialed up safely.
 
+### H. Modular SimulationRunner Architecture & Warm Reset Extensibility
+* **The Problem:** Full simulator restarts ("Cold Restarts") guarantee zero state leakage between trajectories, but incurs initial mesh and node launch overhead. Future scaling may leverage in-process warm resets.
+* **The Design:** `run_sweep.py` structures orchestration into an abstract base class `SimulationRunner` and a concrete `ColdRestartRunner`. `SimulationRunner` manages waypoint ingestion, output directories, and sweep metadata tracking. `ColdRestartRunner` encapsulates the cold restart lifecycle (Gazebo process spin-up, rosbag/state logger capture, goal dispatch, and teardown). An upcoming `WarmResetRunner` can inherit from `SimulationRunner` and implement `run_trajectory()` using Gazebo `/world/<name>/set_pose` and Nav2 initial pose reset services without rewriting orchestrator logic.
+
+### I. TwistStamped Message Alignment & DDS Multi-Type Conflict Resolution
+* **The Problem:** In ROS 2 Jazzy, Clearpath robot platforms publish stamped velocity commands (`geometry_msgs/msg/TwistStamped`) on `/{namespace}/cmd_vel`. Subscribing with legacy unstamped `geometry_msgs/msg/Twist` in downstream loggers creates a dual-type collision on the DDS topic graph.
+* **Failure Mode:** `ros2 bag record` emits `[ROSBAG2_TRANSPORT]: Topic '/a200_0000/cmd_vel' has more than one type associated. Skipping.` and ignores the topic. Furthermore, the telemetry logger receives deserialization failures and logs zero velocities.
+* **The Design:** `log_state.py` subscribes to `geometry_msgs/msg/TwistStamped` by default (extracting `msg.twist.linear.x` and `msg.twist.angular.z`), while offering an optional `--unstamped_cmd_vel` flag for legacy robots. This allows both `ros2 bag record` and `state.jsonl` to reliably capture commanded velocities without DDS graph collisions.
+
+### J. Static Global Costmap Bounds (`nav2_static.yaml`)
+* **The Problem:** Clearpath's default `a200/nav2.yaml` sets `rolling_window: true` ($20\text{ m} \times 20\text{ m}$) on the `global_costmap`. Because rolling windows are robot-centered ($\pm 10\text{ m}$ reach), any waypoint exceeding $10\text{ m}$ Euclidean distance from the spawn location is rejected at second 0 by NavfnPlanner with `"Goal Coordinates was outside bounds"`.
+* **The Design:** Rather than modifying the shared base configuration in `clearpath_nav2_demos`, we duplicated the configuration into `src/nav_worlds/config/nav2_static.yaml` with `global_costmap.rolling_window: false`. In static map localization mode (`slam:=false`), `a200_point_nav.launch.py` automatically routes to `nav2_static.yaml`, sizing the global costmap to the full $30\text{ m} \times 50\text{ m}$ warehouse bounds while preserving stock default behavior elsewhere.
+
+### K. Visual Debugging Mode (`--gui` & `--rviz`)
+* **The Problem:** Headless sweeps operate entirely in the background. When a robot gets caught on an obstacle, spins out, or fails to navigate, diagnosing whether the root cause is physics contact, costmap inflation, or localization drift is difficult from headless logs alone.
+* **The Design:** `run_sweep.py` exposes `--gui` (spawns Gazebo GUI via `headless:=false`) and `--rviz` (spawns RViz via `rviz:=true`). Per `AGENTS.md` Rule 1, any sweep launched with `--gui` must be executed with sandbox bypass (`BypassSandbox: true`) to permit access to host display sockets (`/tmp/.X11-unix`).
+
+### L. Safe Orphan Cleanup (Self-Termination Avoidance)
+* **The Problem:** When `run_sweep.py` is executed via `ros2 run nav_worlds run_sweep.py`, a naive `pkill -9 -f "ros2"` command kills `run_sweep.py` itself and its parent launcher process, abruptly terminating the entire sweep.
+* **The Design:** `cleanup_orphans()` queries `pgrep -f ros2`, filters out `os.getpid()` and `os.getppid()`, and terminates only orphaned simulation and middleware processes before and after each trajectory run.
+
 ---
 
 ## 3. Dataset Output Specification
@@ -75,15 +96,28 @@ flowchart TD
 Each sweep execution generates a timestamped directory structure:
 
 ```text
-dataset_output/
+data/dataset_output/
   sweep_YYYYMMDD_HHMMSS/
-    sweep_config.json          # Complete parameters (seed, map, robot, topics)
-    waypoints.csv              # Exact waypoints used
+    sweep_metadata.csv         # Execution summary (run_id, start_x, start_y, goal_x, goal_y, status, elapsed_time)
     run_000/
-      bag/                     # ROS 2 bag (tf, tf_static, odom, scan_filtered, cmd_vel)
-      state.csv                # High-rate state log (time, pose_x, pose_y, yaw, v_x, w_z)
+      bag/                     # ROS 2 bag (tf, tf_static, odom, scan_filtered, cmd_vel, plan, clock)
+      state.jsonl              # High-rate synchronized state (time, pose_x, pose_y, yaw, vx, wz, 720-beam scan)
     run_001/
       ...
+```
+
+### Telemetry JSON Lines (`state.jsonl`) Schema
+Each line represents a synchronized telemetry sample triggered by the 2D LiDAR callback:
+```json
+{
+  "timestamp": 1726001234.567,
+  "x": 4.125,
+  "y": -2.314,
+  "yaw": 1.5708,
+  "vx": 0.495,
+  "wz": 0.012,
+  "scan": [1.42, 1.45, null, ..., 5.82]
+}
 ```
 
 ---
@@ -91,7 +125,7 @@ dataset_output/
 ## 4. CLI Quick Reference
 
 ```bash
-# Generate deterministic waypoints with visualization:
+# 1. Generate deterministic waypoints with visualization:
 ros2 run nav_worlds generate_waypoints.py \
   --map-yaml $(ros2 pkg prefix clearpath_nav2_demos)/share/clearpath_nav2_demos/maps/warehouse.yaml \
   --seed 42 \
@@ -101,4 +135,17 @@ ros2 run nav_worlds generate_waypoints.py \
   --similarity-thresh 2.0 \
   -o data/warehouse_waypoints.csv \
   --preview data/warehouse_preview.png
+
+# 2. Run automated headless simulation sweep (3 trajectories):
+ros2 run nav_worlds run_sweep.py \
+  --waypoints data/warehouse_waypoints.csv \
+  --max_runs 3
+
+# 3. Run sweep with visual debugging (Gazebo GUI and RViz):
+# (Note: Requires BypassSandbox: true for X11 display socket access)
+ros2 run nav_worlds run_sweep.py \
+  --waypoints data/warehouse_waypoints.csv \
+  --max_runs 1 \
+  --gui \
+  --rviz
 ```
