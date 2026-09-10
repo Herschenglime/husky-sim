@@ -147,16 +147,26 @@ This document provides a comprehensive summary of completed work, key operationa
   - Per-run logging: Spawns fresh `log_state.py` and `ros2 bag record` instances per trajectory for complete data isolation.
   - Eliminates the 25–30s simulator bootup penalty between trajectories, reducing test trajectory turnaround to ~15s.
 
+### 11. End-to-End Dataset Orchestrator (`collect_dataset.py`)
+* **Interactive Waypoint Inspection**: Automatically opens `waypoints_preview.png` via `xdg-open` and prompts `[Y/n]` CLI confirmation before starting the simulation sweep. Use `-y` / `--no-prompt` for headless automation.
+* **Unified Output Hierarchy**: Colocates `waypoints.csv`, `waypoints_preview.png`, `sweep_metadata.csv`, `sim_launch.log`, and per-run folders (`state.jsonl`, `bag/`) under the specified `--output-dir`.
+* **Rosbag Topic Profiles**: Added `--bag-profile {minimal, standard, perception, full}` along with `--add-topics` and `--custom-topics` to both `collect_dataset.py` and `run_sweep.py`.
+* **Real-Time Launch Streaming (`-v` / `--verbose`)**: Implemented a non-blocking streaming thread in `run_sweep.py` that tees launch stdout directly to the terminal when `-v` / `--verbose` is passed, avoiding pipe deadlocks.
+* **Localization Lifecycle Recovery**: Implemented `_check_localization_lifecycle()` in `readiness_gate.py` to auto-recover `map_server` and `amcl` if heavy world bootup causes a DDS state transition timeout.
+
 ---
 
 ## 5. Next Steps for Incoming Agent
 
-1. **Large-Scale Warm Reset Sweeps**:
-   - Execute full sweeps across generated batches (e.g. 10 to 50 trajectories) in the warehouse and depot worlds using `--warm-reset`:
+1. **Large-Scale End-to-End Dataset Generation**:
+   - Run end-to-end dataset generation directly via `collect_dataset.py`:
      ```bash
-     python3 src/nav_worlds/scripts/run_sweep.py --waypoints data/warehouse_waypoints.csv --warm-reset
+     ros2 run nav_worlds collect_dataset.py -n 25 --world warehouse --output-dir data/warehouse_25runs
      ```
-2. **Multi-World Waypoint Generation**:
-   - Run `generate_waypoints.py` against other worlds (`depot`, `office`, `construction`) to build multi-environment training corpora.
+2. **Multi-World Dataset Generation**:
+   - Run `collect_dataset.py` against other worlds (`depot`, `office`, `construction`) to build multi-environment corpora:
+     ```bash
+     ros2 run nav_worlds collect_dataset.py -n 25 --world depot --output-dir data/depot_25runs
+     ```
 3. **Dataset Ingestion Pipeline**:
    - Verify downstream training format compatibility with `state.jsonl` (timestamps monotonically increase across warm resets; apply $t - t_0$ zero-offsetting if needed).

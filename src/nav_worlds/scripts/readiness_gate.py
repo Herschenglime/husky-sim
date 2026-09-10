@@ -235,11 +235,14 @@ class ReadinessGate(Node):
                 self.get_logger().error('Stage 2 FAILED: Timed out waiting for map topic!')
                 return False
 
-            # If running SLAM, monitor and recover slam_toolbox lifecycle if stranded
+            # Monitor and recover lifecycle nodes if stranded
             now = time.monotonic()
-            if self.slam and (now - last_lifecycle_check > 5.0):
+            if now - last_lifecycle_check > 5.0:
                 last_lifecycle_check = now
-                self._check_slam_lifecycle()
+                if self.slam:
+                    self._check_slam_lifecycle()
+                else:
+                    self._check_localization_lifecycle()
 
             rclpy.spin_once(self, timeout_sec=0.2)
 
@@ -334,6 +337,34 @@ class ReadinessGate(Node):
                                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         except Exception as e:
             self.get_logger().debug(f'Lifecycle check exception: {e}')
+
+    def _check_localization_lifecycle(self):
+        """Check map_server and amcl lifecycle states and transition if stranded."""
+        nodes = ['map_server', 'amcl']
+        for n in nodes:
+            node_name = f'/{self.ns}/{n}' if self.ns else f'/{n}'
+            try:
+                res = subprocess.run(
+                    ['ros2', 'lifecycle', 'get', node_name],
+                    capture_output=True, text=True, check=False, timeout=5
+                )
+                state = res.stdout.strip().split()[0] if res.stdout else ''
+                if state == 'unconfigured':
+                    self.get_logger().warn(
+                        f'{node_name} is unconfigured; triggering configure and activate...'
+                    )
+                    subprocess.run(['ros2', 'lifecycle', 'set', node_name, 'configure'],
+                                   check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                    subprocess.run(['ros2', 'lifecycle', 'set', node_name, 'activate'],
+                                   check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                elif state == 'inactive':
+                    self.get_logger().warn(
+                        f'{node_name} is inactive; triggering activate...'
+                    )
+                    subprocess.run(['ros2', 'lifecycle', 'set', node_name, 'activate'],
+                                   check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            except Exception as e:
+                self.get_logger().debug(f'Lifecycle check exception on {node_name}: {e}')
 
 
 def main(args=None):

@@ -142,6 +142,7 @@ routes to `nav2_static.yaml`, expanding the global costmap to the full map exten
 | Path | Description |
 | --- | --- |
 | `launch/a200_point_nav.launch.py` | Native ROS 2 point-to-point navigation bringup (sim + SLAM/AMCL + Nav2). |
+| `scripts/collect_dataset.py` | End-to-end dataset collector: waypoint generation, interactive xdg-open approval, and simulation sweep. |
 | `scripts/run_sweep.py` | Automated data collection orchestrator (warm reset default, optional cold restart, rosbag + JSONL logging). |
 | `scripts/generate_waypoints.py` | Deterministic free-space waypoint sampler with obstacle clearance and reachability checks. |
 | `scripts/log_state.py` | Synchronized telemetry logger (pose, twist, 720-beam scan array) dumping to JSON Lines. |

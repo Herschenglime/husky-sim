@@ -7,6 +7,7 @@ import math
 import shutil
 import argparse
 import subprocess
+import threading
 from datetime import datetime
 
 try:
@@ -16,15 +17,79 @@ try:
 except ImportError:
     rclpy = None
 
+def resolve_bag_topics(args, ns):
+    if getattr(args, 'custom_topics', None):
+        return args.custom_topics
+
+    profile = getattr(args, 'bag_profile', 'standard') or 'standard'
+    profile = profile.lower()
+
+    # Minimal profile: odom, cmd_vel, tf, tf_static, clock
+    minimal = [
+        f'/{ns}/platform/odom/filtered',
+        f'/{ns}/cmd_vel',
+        f'/{ns}/tf',
+        f'/{ns}/tf_static',
+        '/clock'
+    ]
+
+    # Standard profile (default): minimal + 2d lidar, plan, goal_pose
+    standard = list(minimal) + [
+        f'/{ns}/plan',
+        f'/{ns}/goal_pose'
+    ]
+    if not getattr(args, 'disable_lidar2d', False):
+        standard.append(f'/{ns}/sensors/lidar2d_0/scan_filtered')
+
+    # Perception profile: standard + camera
+    perception = list(standard) + [
+        f'/{ns}/sensors/camera_0/color/image',
+        f'/{ns}/sensors/camera_0/color/camera_info'
+    ]
+
+    # Full profile: perception + 3d lidar + joint states
+    full = list(perception) + [
+        f'/{ns}/sensors/lidar3d_0/velodyne_points',
+        f'/{ns}/joint_states'
+    ]
+
+    if profile == 'minimal':
+        topics = list(minimal)
+    elif profile == 'perception':
+        topics = list(perception)
+    elif profile == 'full':
+        topics = list(full)
+    else:  # 'standard'
+        topics = list(standard)
+
+    # Legacy flags overrides if profile wasn't explicitly set to perception/full
+    if getattr(args, 'include_camera', False) and profile not in ('perception', 'full'):
+        for c in [f'/{ns}/sensors/camera_0/color/image', f'/{ns}/sensors/camera_0/color/camera_info']:
+            if c not in topics:
+                topics.append(c)
+
+    if getattr(args, 'add_topics', None):
+        for t in args.add_topics:
+            topic = t if t.startswith('/') else f'/{ns}/{t}'
+            if topic not in topics:
+                topics.append(topic)
+
+    return topics
+
+
 class SimulationRunner:
     def __init__(self, args):
         self.args = args
         self.ns = "a200_0000"
         
         # Setup output directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.sweep_dir = os.path.join(self.args.output_dir, f"sweep_{timestamp}")
+        if getattr(self.args, 'sweep_dir', None):
+            self.sweep_dir = self.args.sweep_dir
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.sweep_dir = os.path.join(self.args.output_dir, f"sweep_{timestamp}")
         os.makedirs(self.sweep_dir, exist_ok=True)
+        self.bag_topics = resolve_bag_topics(self.args, self.ns)
         
         self.metadata_file = os.path.join(self.sweep_dir, "sweep_metadata.csv")
         with open(self.metadata_file, 'w', newline='') as f:
@@ -113,25 +178,7 @@ class ColdRestartRunner(SimulationRunner):
         ])
 
         # rosbag
-        bag_topics = [
-            f'/{self.ns}/platform/odom/filtered',
-            f'/{self.ns}/cmd_vel',
-            f'/{self.ns}/tf',
-            f'/{self.ns}/tf_static',
-            f'/{self.ns}/joint_states',
-            f'/{self.ns}/plan',
-            f'/{self.ns}/goal_pose',
-            '/clock'
-        ]
-        if not self.args.disable_lidar2d:
-            bag_topics.append(f'/{self.ns}/sensors/lidar2d_0/scan_filtered')
-        if self.args.include_camera:
-            bag_topics.extend([
-                f'/{self.ns}/sensors/camera_0/color/image',
-                f'/{self.ns}/sensors/camera_0/color/camera_info'
-            ])
-            
-        bag_cmd = ['ros2', 'bag', 'record', '-o', bag_dir, '--use-sim-time'] + bag_topics
+        bag_cmd = ['ros2', 'bag', 'record', '-o', bag_dir, '--use-sim-time'] + self.bag_topics
         bag_proc = subprocess.Popen(bag_cmd)
         
         # Give them a second to initialize
@@ -330,7 +377,24 @@ class WarmRestartRunner(SimulationRunner):
 
         print(f"Launching simulation stack (logging to {launch_log_path})...")
         launch_log_file = open(launch_log_path, 'w')
-        self.launch_proc = subprocess.Popen(launch_cmd, stdout=launch_log_file, stderr=subprocess.STDOUT)
+        self.launch_proc = subprocess.Popen(
+            launch_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+
+        def stream_output():
+            for line in self.launch_proc.stdout:
+                launch_log_file.write(line)
+                launch_log_file.flush()
+                if getattr(self.args, 'verbose', False):
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+
+        self.stream_thread = threading.Thread(target=stream_output, daemon=True)
+        self.stream_thread.start()
 
         try:
             # Wait for Nav2 bringup to be READY
@@ -406,25 +470,7 @@ class WarmRestartRunner(SimulationRunner):
             '--output', state_file
         ])
 
-        bag_topics = [
-            f'/{self.ns}/platform/odom/filtered',
-            f'/{self.ns}/cmd_vel',
-            f'/{self.ns}/tf',
-            f'/{self.ns}/tf_static',
-            f'/{self.ns}/joint_states',
-            f'/{self.ns}/plan',
-            f'/{self.ns}/goal_pose',
-            '/clock'
-        ]
-        if not self.args.disable_lidar2d:
-            bag_topics.append(f'/{self.ns}/sensors/lidar2d_0/scan_filtered')
-        if self.args.include_camera:
-            bag_topics.extend([
-                f'/{self.ns}/sensors/camera_0/color/image',
-                f'/{self.ns}/sensors/camera_0/color/camera_info'
-            ])
-            
-        bag_cmd = ['ros2', 'bag', 'record', '-o', bag_dir, '--use-sim-time'] + bag_topics
+        bag_cmd = ['ros2', 'bag', 'record', '-o', bag_dir, '--use-sim-time'] + self.bag_topics
         bag_proc = subprocess.Popen(bag_cmd)
         time.sleep(1.0)
 
@@ -484,8 +530,13 @@ def main():
     parser.add_argument('--rviz', action='store_true', help='Run RViz visualization (rviz:=true)')
     parser.add_argument('--include-camera', action='store_true', help='Include camera topics in rosbag')
     parser.add_argument('--disable-lidar2d', action='store_true', help='Disable 2D Lidar in rosbag')
+    parser.add_argument('--sweep-dir', type=str, default=None, help='Explicit directory for this sweep (overrides output_dir auto-timestamping)')
+    parser.add_argument('--bag-profile', type=str, default='standard', choices=['minimal', 'standard', 'perception', 'full'], help='Rosbag topic profile preset (default: standard)')
+    parser.add_argument('--add-topics', nargs='*', default=None, help='Additional topics to record in rosbag')
+    parser.add_argument('--custom-topics', nargs='*', default=None, help='Explicit full list of topics to record in rosbag (overrides profile)')
     parser.add_argument('--cold-restart', action='store_true', help='Use cold restart (relaunch simulation for each trajectory instead of warm reset)')
     parser.add_argument('--warm-reset', action='store_true', default=True, help='Use warm reset (default: keeps simulation running between trajectories)')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Stream simulation launch output directly to the terminal in real time')
     
     args = parser.parse_args()
     
