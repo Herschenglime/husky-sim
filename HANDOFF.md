@@ -139,16 +139,24 @@ This document provides a comprehensive summary of completed work, key operationa
   - Updated `src/nav_worlds/launch/sim.launch.py` to delegate to `nav_worlds/launch/gz_sim.launch.py`.
   - Signal delivery now flows directly from ROS 2 launch to `ruby`, activating its `Signal.trap("INT")` handler to cleanly kill both `gz sim gui` and `gz sim server` upon shutdown. Verified complete GUI and simulation teardown in 36.48s.
 
+### 10. Warm Resets (`WarmRestartRunner`)
+* **Implementation**: Introduced `WarmRestartRunner` in `src/nav_worlds/scripts/run_sweep.py` selectable with `--warm-reset`.
+* **Mechanism**:
+  - Launches Gazebo and Nav2 stack once at the start with `run_goal:=false`.
+  - Between runs: zeros velocity (`TwistStamped`), teleports `a200_0000/robot` via Gazebo service `/world/{world}/set_pose`, publishes AMCL seed pose to `/{ns}/initialpose`, and clears local & global costmaps via `nav2_msgs/srv/ClearEntireCostmap`.
+  - Per-run logging: Spawns fresh `log_state.py` and `ros2 bag record` instances per trajectory for complete data isolation.
+  - Eliminates the 25–30s simulator bootup penalty between trajectories, reducing test trajectory turnaround to ~15s.
+
 ---
 
 ## 5. Next Steps for Incoming Agent
 
-1. **Large-Scale Data Collection**:
-   - Execute full sweeps across generated batches (e.g. 10 to 50 trajectories) in the warehouse and depot worlds:
+1. **Large-Scale Warm Reset Sweeps**:
+   - Execute full sweeps across generated batches (e.g. 10 to 50 trajectories) in the warehouse and depot worlds using `--warm-reset`:
      ```bash
-     ros2 run nav_worlds run_sweep.py --waypoints data/warehouse_waypoints.csv --max_runs 10
+     python3 src/nav_worlds/scripts/run_sweep.py --waypoints data/warehouse_waypoints.csv --warm-reset
      ```
-2. **Warm Reset Implementation (`WarmResetRunner`)**:
-   - Implement `WarmResetRunner(SimulationRunner)` to reposition the robot via `/world/<name>/set_pose`, reset AMCL (`/initialpose`), and reset costmaps via Nav2 lifecycle services without killing the Gazebo server.
-3. **Multi-World Waypoint Generation**:
+2. **Multi-World Waypoint Generation**:
    - Run `generate_waypoints.py` against other worlds (`depot`, `office`, `construction`) to build multi-environment training corpora.
+3. **Dataset Ingestion Pipeline**:
+   - Verify downstream training format compatibility with `state.jsonl` (timestamps monotonically increase across warm resets; apply $t - t_0$ zero-offsetting if needed).

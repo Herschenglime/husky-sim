@@ -68,9 +68,11 @@ flowchart TD
 * **The Problem:** Increasing Gazebo's Real-Time Factor (RTF $\gg 1$) too early can starve CPU resources, causing the controller manager spawner or SLAM toolbox lifecycle transitions to fail during mesh loading.
 * **The Design:** Initial validation and sweeps are capped near RTF $\sim 1.0$. Once process stability is proven, physics update rates can be dialed up safely.
 
-### H. Modular SimulationRunner Architecture & Warm Reset Extensibility
-* **The Problem:** Full simulator restarts ("Cold Restarts") guarantee zero state leakage between trajectories, but incurs initial mesh and node launch overhead. Future scaling may leverage in-process warm resets.
-* **The Design:** `run_sweep.py` structures orchestration into an abstract base class `SimulationRunner` and a concrete `ColdRestartRunner`. `SimulationRunner` manages waypoint ingestion, output directories, and sweep metadata tracking. `ColdRestartRunner` encapsulates the cold restart lifecycle (Gazebo process spin-up, rosbag/state logger capture, goal dispatch, and teardown). An upcoming `WarmResetRunner` can inherit from `SimulationRunner` and implement `run_trajectory()` using Gazebo `/world/<name>/set_pose` and Nav2 initial pose reset services without rewriting orchestrator logic.
+### H. Modular SimulationRunner Architecture & Warm Reset (Default)
+* **The Problem:** Full simulator restarts ("Cold Restarts") guarantee zero state leakage between trajectories, but incur an initial ~25–30s mesh and node launch overhead per run.
+* **The Design:** `run_sweep.py` structures orchestration into an abstract base class `SimulationRunner` with two implementations:
+  * **`WarmRestartRunner` (Default):** Launches Gazebo Harmonic and the Nav2 stack once with `run_goal:=false`. Between trajectories, it zeroes cmd_vel (`TwistStamped`), teleports `a200_0000/robot` via Gazebo service `/world/<name>/set_pose`, publishes AMCL seed pose to `/{ns}/initialpose`, and clears local & global costmaps via `ClearEntireCostmap`. Turnaround time per trajectory drops to ~15s.
+  * **`ColdRestartRunner` (`--cold-restart`):** Tears down Gazebo and all ROS 2 nodes after each run and spins up fresh processes for 100% clean-slate execution.
 
 ### I. TwistStamped Message Alignment & DDS Multi-Type Conflict Resolution
 * **The Problem:** In ROS 2 Jazzy, Clearpath robot platforms publish stamped velocity commands (`geometry_msgs/msg/TwistStamped`) on `/{namespace}/cmd_vel`. Subscribing with legacy unstamped `geometry_msgs/msg/Twist` in downstream loggers creates a dual-type collision on the DDS topic graph.
@@ -137,12 +139,18 @@ ros2 run nav_worlds generate_waypoints.py \
   -o data/warehouse_waypoints.csv \
   --preview data/warehouse_preview.png
 
-# 2. Run automated headless simulation sweep (3 trajectories):
+# 2. Run automated simulation sweep (default: warm resets):
 ros2 run nav_worlds run_sweep.py \
   --waypoints data/warehouse_waypoints.csv \
   --max_runs 3
 
-# 3. Run sweep with visual debugging (Gazebo GUI and RViz):
+# 3. Run cold restart sweep (full simulator teardown per trajectory):
+ros2 run nav_worlds run_sweep.py \
+  --waypoints data/warehouse_waypoints.csv \
+  --max_runs 3 \
+  --cold-restart
+
+# 4. Run sweep with visual debugging (Gazebo GUI and RViz):
 # (Note: Requires BypassSandbox: true for X11 display socket access)
 ros2 run nav_worlds run_sweep.py \
   --waypoints data/warehouse_waypoints.csv \
