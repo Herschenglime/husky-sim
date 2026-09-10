@@ -64,8 +64,9 @@ class SimulationRunner:
 
 class ColdRestartRunner(SimulationRunner):
     def cleanup_orphans(self):
-        # Clean up Gazebo
+        # Clean up Gazebo and specific scripts
         subprocess.run(['pkill', '-9', '-f', 'gz sim'], capture_output=True)
+        subprocess.run(['pkill', '-9', '-f', 'log_state.py'], capture_output=True)
         
         # Clean up ROS 2 nodes, but never kill ourselves or our parent process
         my_pid = os.getpid()
