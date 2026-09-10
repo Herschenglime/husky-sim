@@ -84,6 +84,7 @@ flowchart TD
 ### K. Visual Debugging Mode (`--gui` & `--rviz`)
 * **The Problem:** Headless sweeps operate entirely in the background. When a robot gets caught on an obstacle, spins out, or fails to navigate, diagnosing whether the root cause is physics contact, costmap inflation, or localization drift is difficult from headless logs alone.
 * **The Design:** `run_sweep.py` exposes `--gui` (spawns Gazebo GUI via `headless:=false`) and `--rviz` (spawns RViz via `rviz:=true`). Per `AGENTS.md` Rule 1, any sweep launched with `--gui` must be executed with sandbox bypass (`BypassSandbox: true`) to permit access to host display sockets (`/tmp/.X11-unix`).
+* **Clean GUI Teardown:** In `sim.launch.py`, Gazebo is launched directly via `ExecuteProcess(..., shell=False)` rather than `ros_gz_sim`'s wrapper (which uses `shell=True`). This direct invocation ensures ROS 2 launch shutdown signals propagate straight to the `gz` Ruby wrapper, allowing its `Signal.trap("INT")` handler to cleanly terminate the detached `gz-sim-gui` Qt window without leaving lingering display windows upon trajectory completion.
 
 ### L. Safe Orphan Cleanup (Self-Termination Avoidance)
 * **The Problem:** When `run_sweep.py` is executed via `ros2 run nav_worlds run_sweep.py`, a naive `pkill -9 -f "ros2"` command kills `run_sweep.py` itself and its parent launcher process, abruptly terminating the entire sweep.

@@ -149,6 +149,7 @@ routes to `nav2_static.yaml`, expanding the global costmap to the full map exten
 | `scripts/bringup.sh` | Backward-compatibility forwarder to `a200_point_nav.launch.py`. |
 | `scripts/send_goal.py` | Send a goal and report the outcome. |
 | `launch/sim.launch.py` | World + robot, without the `choices` restriction. |
+| `launch/gz_sim.launch.py` | Gazebo simulator launch with `shell=False` for direct signal propagation and clean GUI teardown. |
 | `launch/husky_nav.launch.py` | Legacy single-shot launch (uses fixed delays). |
 | `scripts/scan_self_filter.py` | Drops laser returns landing inside the footprint. |
 | `config/nav2_static.yaml` | Static-map Nav2 configuration with global costmap rolling window disabled. |

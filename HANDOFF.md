@@ -130,6 +130,15 @@ This document provides a comprehensive summary of completed work, key operationa
 * Invoking `pkill -9 -f "ros2"` inside `run_sweep.py` killed the sweep runner itself when launched via `ros2 run nav_worlds run_sweep.py`.
 * `cleanup_orphans()` explicitly protects `os.getpid()` and `os.getppid()`, terminating only child/external simulation nodes.
 
+### 9. Gazebo GUI Clean Shutdown via Direct Process Execution (`gz_sim.launch.py`)
+* **Issue**: On programmatic `Shutdown()` (such as goal arrival triggering `OnProcessExit -> Shutdown()`), the Gazebo GUI window lingered on screen while all other ROS 2 nodes terminated cleanly.
+* **Root Cause**: Upstream `ros_gz_sim`'s `gz_sim.launch.py` launches Gazebo through `/bin/sh -c "..."` (`shell=True`). On programmatic `Shutdown()`, ROS 2 launch sends `SIGINT` only to `/bin/sh` (which ignores it in non-interactive mode while waiting on children), and then escalates to `SIGKILL` on `/bin/sh`. The child `ruby` wrapper and detached `gz sim gui` process group were orphaned and never received a termination signal.
+* **Resolution**: Created `src/nav_worlds/launch/gz_sim.launch.py` as a customized duplicate of upstream `ros_gz_sim/launch/gz_sim.launch.py`:
+  - Retains all upstream environment variables (`GZ_SIM_SYSTEM_PLUGIN_PATH`, `GZ_SIM_RESOURCE_PATH`), package export scanning (`GazeboRosPaths`), and launch arguments (`--force-version`, `debugger`, `on_exit_shutdown`).
+  - Replaces `shell=True` with `shell=False` using `shlex.split` for command tokens.
+  - Updated `src/nav_worlds/launch/sim.launch.py` to delegate to `nav_worlds/launch/gz_sim.launch.py`.
+  - Signal delivery now flows directly from ROS 2 launch to `ruby`, activating its `Signal.trap("INT")` handler to cleanly kill both `gz sim gui` and `gz sim server` upon shutdown. Verified complete GUI and simulation teardown in 36.48s.
+
 ---
 
 ## 5. Next Steps for Incoming Agent

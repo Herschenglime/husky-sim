@@ -57,10 +57,11 @@ def build_gz_actions(world_sdf, headless):
     """Run Gazebo (headless or GUI) avoiding clearpath_gz's gz_sim.launch.py.
     
     This lets us override the gui.config for top-down views, or add headless flags.
+    We delegate to nav_worlds/launch/gz_sim.launch.py (which sets shell=False to ensure
+    clean process group teardown on goal arrival / shutdown).
     """
     pkg_gz = get_package_share_directory('clearpath_gz')
     pkg_nav_worlds = get_package_share_directory('nav_worlds')
-    pkg_ros_gz = get_package_share_directory('ros_gz_sim')
     packages_paths = [os.path.join(p, 'share')
                       for p in os.getenv('AMENT_PREFIX_PATH', '').split(':') if p]
 
@@ -77,7 +78,7 @@ def build_gz_actions(world_sdf, headless):
         gz_args = f'{world_sdf} -r -v 4 --gui-config {gui_config}'
 
     gz_sim = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(pkg_ros_gz, 'launch', 'gz_sim.launch.py')),
+        PythonLaunchDescriptionSource(os.path.join(pkg_nav_worlds, 'launch', 'gz_sim.launch.py')),
         launch_arguments=[('gz_args', gz_args)],
     )
 
