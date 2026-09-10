@@ -17,7 +17,7 @@ flowchart TD
     subgraph Iteration [Each Waypoint Iteration]
         Runner -->|Headless Bringup| GZ[Gazebo + Nav2 Stack]
         Runner -->|Record Minimal Topics| Bag[rosbag2]
-        Runner -->|Stream Telemetry| Log[log_state.py -> CSV]
+        Runner -->|Stream Telemetry| Log[log_state.py -> JSONL]
         Runner -->|Dispatch Goal| Goal[send_goal.py]
         Goal -->|Success / Timeout| Teardown[Clean SIGINT Shutdown]
     end
@@ -72,7 +72,8 @@ flowchart TD
 * **The Problem:** Full simulator restarts ("Cold Restarts") guarantee zero state leakage between trajectories, but incur an initial ~25–30s mesh and node launch overhead per run.
 * **The Design:** `run_sweep.py` structures orchestration into an abstract base class `SimulationRunner` with two implementations:
   * **`WarmRestartRunner` (Default):** Launches Gazebo Harmonic and the Nav2 stack once with `run_goal:=false`. Between trajectories, it zeroes cmd_vel (`TwistStamped`), teleports `a200_0000/robot` via Gazebo service `/world/<name>/set_pose`, publishes AMCL seed pose to `/{ns}/initialpose`, and clears local & global costmaps via `ClearEntireCostmap`. Turnaround time per trajectory drops to ~15s.
-  * **`ColdRestartRunner` (`--cold-restart`):** Tears down Gazebo and all ROS 2 nodes after each run and spins up fresh processes for 100% clean-slate execution.
+  * **Warm Reset Operational Limits:** Teleporting the Gazebo model does *not* reset the internal state or history of `robot_localization` (the EKF node), which continues accumulating wheel odometry and IMU measurements. Consequently, `state.jsonl` coordinates logged from `/platform/odom/filtered` are in the continuous `odom` frame rather than resetting to `(start_x, start_y)` in the `map` frame.
+  * **`ColdRestartRunner` (`--cold-restart`):** Tears down Gazebo and all ROS 2 nodes after each run and spins up fresh processes. Recommended whenever 100% clean-slate execution, zero EKF state leakage, or absolute trajectory independence is required.
 
 ### I. TwistStamped Message Alignment & DDS Multi-Type Conflict Resolution
 * **The Problem:** In ROS 2 Jazzy, Clearpath robot platforms publish stamped velocity commands (`geometry_msgs/msg/TwistStamped`) on `/{namespace}/cmd_vel`. Subscribing with legacy unstamped `geometry_msgs/msg/Twist` in downstream loggers creates a dual-type collision on the DDS topic graph.
@@ -128,7 +129,14 @@ Each line represents a synchronized telemetry sample triggered by the 2D LiDAR c
 ## 4. CLI Quick Reference
 
 ```bash
-# 1. Generate deterministic waypoints with visualization:
+# 1. End-to-end dataset collection (waypoint generation + interactive preview + sweep):
+ros2 run nav_worlds collect_dataset.py \
+  -n 10 \
+  --world warehouse \
+  --output-dir data/warehouse_10runs \
+  -y
+
+# 2. Generate deterministic waypoints manually:
 ros2 run nav_worlds generate_waypoints.py \
   --map-yaml $(ros2 pkg prefix clearpath_nav2_demos)/share/clearpath_nav2_demos/maps/warehouse.yaml \
   --seed 42 \
@@ -139,18 +147,18 @@ ros2 run nav_worlds generate_waypoints.py \
   -o data/warehouse_waypoints.csv \
   --preview data/warehouse_preview.png
 
-# 2. Run automated simulation sweep (default: warm resets):
+# 3. Run automated simulation sweep (default: warm resets):
 ros2 run nav_worlds run_sweep.py \
   --waypoints data/warehouse_waypoints.csv \
   --max_runs 3
 
-# 3. Run cold restart sweep (full simulator teardown per trajectory):
+# 4. Run cold restart sweep (full simulator teardown per trajectory):
 ros2 run nav_worlds run_sweep.py \
   --waypoints data/warehouse_waypoints.csv \
   --max_runs 3 \
   --cold-restart
 
-# 4. Run sweep with visual debugging (Gazebo GUI and RViz):
+# 5. Run sweep with visual debugging (Gazebo GUI and RViz):
 # (Note: Requires BypassSandbox: true for X11 display socket access)
 ros2 run nav_worlds run_sweep.py \
   --waypoints data/warehouse_waypoints.csv \

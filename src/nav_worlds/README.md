@@ -23,11 +23,11 @@ ros2 launch nav_worlds a200_point_nav.launch.py world:=warehouse headless:=false
 
 *(Note: `ros2 run nav_worlds bringup.sh [world]` forwards to `a200_point_nav.launch.py`)*
 
-Then send goals, in the `map` frame:
+Then send goals, in the `map` frame (always specify `--use-sim-time` when running with simulation):
 
 ```bash
-ros2 run nav_worlds send_goal.py 4.0 0.0          # x, y
-ros2 run nav_worlds send_goal.py 4.0 2.0 90       # x, y, yaw in degrees
+ros2 run nav_worlds send_goal.py 4.0 0.0 --use-sim-time          # x, y
+ros2 run nav_worlds send_goal.py 4.0 2.0 90 --use-sim-time       # x, y, yaw in degrees
 ```
 
 `send_goal.py` reports SUCCEEDED/FAILED with the time taken and how close the
@@ -38,15 +38,25 @@ robot actually got, so a run can be scored rather than eyeballed.
 To collect reproducible datasets (ROS 2 MCAP bags and synchronized `.jsonl` telemetry logs) over batches of independent trajectories:
 
 ```bash
-# 1. Sample reachable, collision-free waypoints from a static map:
+# 1. End-to-end dataset collector (Recommended):
+# Generates waypoints, shows trajectory preview, and executes sweep:
+ros2 run nav_worlds collect_dataset.py -n 10 --world warehouse -y --output-dir data/warehouse_10runs
+
+# 2. Manual two-step workflow:
+# Step A: Sample reachable, collision-free waypoints from a static map:
 ros2 run nav_worlds generate_waypoints.py \
   --map-yaml $(ros2 pkg prefix clearpath_nav2_demos)/share/clearpath_nav2_demos/maps/warehouse.yaml \
   --seed 42 -n 10 -o data/warehouse_waypoints.csv
 
-# 2. Run automated headless simulation sweep:
+# Step B: Run automated headless simulation sweep (Warm Reset default):
 ros2 run nav_worlds run_sweep.py \
   --waypoints data/warehouse_waypoints.csv \
   --max_runs 3
+
+# Step C: Cold restart sweep (full simulator teardown per trajectory for 100% state isolation):
+ros2 run nav_worlds run_sweep.py \
+  --waypoints data/warehouse_waypoints.csv \
+  --cold-restart
 
 # 3. Visual Debugging Mode (Gazebo GUI and RViz):
 # (Requires unsandboxed execution per AGENTS.md for host X11 display socket access)
@@ -74,7 +84,7 @@ permanently imminent collision, scaling every command to zero. The robot accepts
 goals, plans paths, reports "Passing new path to controller", and never moves.
 
 `scripts/scan_self_filter.py` discards returns that land inside the footprint and
-republishes on `sensors/lidar2d_0/scan_filtered`; `bringup.sh` points SLAM and
+republishes on `sensors/lidar2d_0/scan_filtered`; `a200_point_nav.launch.py` points SLAM and
 Nav2 at that topic via their `scan_topic` argument. The closest return goes from
 0.401 m to 1.099 m, and the 683 beams that see the world are passed through
 byte-identical.
@@ -101,10 +111,7 @@ its own way and none of the messages point at the cause:
 | slam_toolbox | logs `Configuring`, never reaches `Activating`, no `/map` ever |
 | nav2 | `failed to send response to change_state (timeout)`, servers strand unconfigured |
 
-`bringup.sh` waits for the world, the robot, a settled RTF, the lidar, active
-controllers, a `/map`, and finally the `navigate_to_pose` action - each on
-observable state rather than a fixed delay, because load times differ by an
-order of magnitude between worlds.
+`readiness_gate.py` (invoked sequentially inside `a200_point_nav.launch.py`) waits for the simulation `/clock`, lidar scans, active controllers (auto-spawning if missing), an `odom -> base_link` TF transform, a published map, and verified AMCL/SLAM localization before triggering Nav2 bringup. Every gate checks observable state rather than a fixed delay.
 
 **`clearpath_gz`'s `simulation.launch.py` only accepts its own six worlds.** Its
 `world` argument carries a `choices` list, so `depot` - or any path - is
@@ -115,7 +122,7 @@ the name inside the SDF, for its `/world/<name>/create` service.
 
 **There is no way to run `clearpath_gz` headless.** It builds the `gz_args`
 string itself and exposes no hook, so `-s --headless-rendering` cannot be passed
-through. `sim.launch.py` takes `headless:=true` (the default from `bringup.sh`)
+through. `sim.launch.py` takes `headless:=true` (the default from `a200_point_nav.launch.py`)
 and calls `ros_gz_sim` directly, carrying over the three things `clearpath_gz`
 sets up that are not optional: the resource path, the clock bridge, and the
 world. `--headless-rendering` is needed *in addition to* `-s`, or rendering
@@ -136,6 +143,7 @@ Rather than mutating the default demo configuration, `config/nav2_static.yaml`
 provides a dedicated duplicate with `rolling_window: false`. When navigating
 against static maps (`slam:=false`), `a200_point_nav.launch.py` automatically
 routes to `nav2_static.yaml`, expanding the global costmap to the full map extent.
+*(Note: when running with `slam:=true`, Nav2 continues to use the rolling window configuration; keep initial SLAM exploration goals within 10 m of the current robot pose).*
 
 ## Layout
 

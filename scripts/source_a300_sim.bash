@@ -6,8 +6,12 @@ set -eo pipefail
 export PATH="/usr/bin:${PATH}"
 
 source /opt/ros/jazzy/setup.bash
-source /home/robopi/clearpath_ws/install/setup.bash
-source /home/robopi/ros2_ws/install/setup.bash
+if [ -f "${HOME}/clearpath_ws/install/setup.bash" ]; then
+  source "${HOME}/clearpath_ws/install/setup.bash"
+fi
+if [ -f "${HOME}/ros2_ws/install/setup.bash" ]; then
+  source "${HOME}/ros2_ws/install/setup.bash"
+fi
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"

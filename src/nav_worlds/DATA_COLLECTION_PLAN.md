@@ -14,7 +14,7 @@ I performed a web search for existing ROS 2 Nav2 simulation data collection tool
 We will create a script that reads any given static map, identifies free space, and randomly selects valid start and end coordinates.
 
 #### [NEW] [generate_waypoints.py](file:///home/pgrau/ros2_ws/src/nav_worlds/scripts/generate_waypoints.py)
-- **Extensibility**: Accepts `--map_yaml` as an argument to support any map (defaults to `warehouse.yaml`).
+- **Extensibility**: Accepts `--map-yaml` as an argument to support any map (defaults to `warehouse.yaml`).
 - Loads the YAML, parses the corresponding `.pgm` image.
 - Finds all free pixels (value > free_thresh).
 - Converts pixel coordinates to real-world coordinates `(x, y)` using the map's origin and resolution.
@@ -37,10 +37,13 @@ We created a lightweight node to log state variables and 2D LiDAR scans directly
 
 We created the main orchestrator script that loops through the generated waypoints, drives the simulation lifecycle, and organizes the output data.
 
+#### [NEW] [collect_dataset.py](file:///home/pgrau/ros2_ws/src/nav_worlds/scripts/collect_dataset.py)
+- **Unified Pipeline**: Wraps waypoint generation, interactive trajectory inspection (`xdg-open`), and automated sweep execution in a single command. Use `-y` for non-interactive execution.
+
 #### [NEW] [run_sweep.py](file:///home/pgrau/ros2_ws/src/nav_worlds/scripts/run_sweep.py)
 - **Real-Time Factor (RTF)**: Gazebo physics cap is maintained near real-time (RTF ~ 1.0) for initial stability.
-- **Modular Runner Architecture**: Structured with a base class `SimulationRunner` (managing waypoints, output directories, and sweep metadata) and `ColdRestartRunner` (managing cold restart bringup, bag recording, and process teardown). This design isolates the execution loop so that future in-process "Warm Resets" can be added as a subclass.
-- **Static Nav2 Costmap Support**: Routes navigation to `src/nav_worlds/config/nav2_static.yaml` (`rolling_window: false`) to avoid out-of-bounds trajectory aborts on distant waypoints (> 10m).
+- **Modular Runner Architecture**: Structured with a base class `SimulationRunner` (managing waypoints, output directories, and sweep metadata), `WarmRestartRunner` (default in-process teleportation), and `ColdRestartRunner` (managing cold restart bringup, bag recording, and process teardown per run).
+- **Static Nav2 Costmap Support**: Routes navigation to `src/nav_worlds/config/nav2_static.yaml` (`rolling_window: false`) in localization mode to avoid out-of-bounds trajectory aborts on distant waypoints (> 10m).
 - **Visual Debugging**: Accepts `--gui` (Gazebo GUI via `headless:=false`) and `--rviz` (RViz visualization) for interactive debugging.
 - **Data Organization**: Creates a timestamped parent directory for the entire sweep under `data/dataset_output/`:
   ```text

@@ -96,23 +96,16 @@ underneath. `go1_nav_bringup.sh` sources what it needs itself.
 
 ### 3.1 The `~/clearpath/robot.yaml` slot — a200 only, read before running it
 
-Clearpath's generator chain reads **one** robot description, from
-`~/clearpath/robot.yaml`, and the two a200 stacks need different ones:
+Clearpath's generator chain reads robot descriptions from `~/clearpath/robot.yaml`, and the two a200 stacks use different configurations:
 
 | Stack | Needs | Installed by |
 |---|---|---|
 | `line_follow_track` | a200 + RealSense pitched 0.45 rad at the floor | `install_robot_config.sh` (backs the old one up) |
-| `nav_worlds` | a200 + sensor arch, 2D and 3D lidar | copy `nav_worlds/config/a200_sample.yaml` |
+| `nav_worlds` | a200 + sensor arch, 2D and 3D lidar | `nav_worlds/config/robot.yaml` (auto-fallback) or copy `a200_sample.yaml` |
 
-They cannot coexist, and this is the most common reason a stack that worked
-yesterday comes up with no camera or no lidar today. The namespace comes from
-the same file and is baked into every topic name, so a mismatch also shows up as
-topics that simply are not there. To keep both, put each in its own directory
-and pass `setup_path:=/path/to/dir/` — every a200 launch here takes it.
+In `nav_worlds`, `a200_point_nav.launch.py` automatically falls back to `nav_worlds/config/robot.yaml` if `~/clearpath/robot.yaml` does not exist. You can also point to any configuration directory via `setup_path:=/path/to/dir/` without mutating `~/clearpath/robot.yaml`.
 
-The go1 has no equivalent: its namespace comes from
-`gazebo_sim/config/robots.yaml` (`robot1`), which both its launches read, so the
-name is never written down twice.
+The go1 has no equivalent: its namespace comes from `gazebo_sim/config/robots.yaml` (`robot1`), which both its launches read, so the name is never written down twice.
 
 ---
 
@@ -294,33 +287,64 @@ staged bringup, a self-scan filter, a world launch without the `choices`
 restriction, and a fixed depot world.
 
 ```bash
-cp ~/ros2_ws/src/nav_worlds/config/a200_sample.yaml ~/clearpath/robot.yaml
+# Point-to-point goal navigation for A200 with SLAM (builds a map as it drives):
+ros2 launch nav_worlds a200_point_nav.launch.py world:=warehouse
 
-ros2 run nav_worlds bringup.sh warehouse              # SLAM, builds a map as it drives
-ros2 run nav_worlds bringup.sh warehouse --localize   # AMCL against maps/warehouse.yaml
-HEADLESS=false ros2 run nav_worlds bringup.sh office  # with the Gazebo GUI
+# With AMCL localization against a saved map:
+ros2 launch nav_worlds a200_point_nav.launch.py world:=warehouse slam:=false
+
+# With Gazebo GUI enabled:
+ros2 launch nav_worlds a200_point_nav.launch.py world:=warehouse headless:=false
 ```
 
-`bringup.sh` prints each stage as it becomes ready and exits non-zero if one
-never does. Every wait is on observable state, not a fixed delay: the world, the
-robot entity, a settled RTF, the lidar, active controllers, a `/map`, and finally
-the `navigate_to_pose` action.
+*(Note: `ros2 run nav_worlds bringup.sh [world]` remains available as a backward-compatibility wrapper).*
+
+The native launch file (`a200_point_nav.launch.py`) stages startup via `readiness_gate.py`. Every wait is on observable state: simulation `/clock` advancing, lidar scans actively publishing, active controllers (`joint_state_broadcaster`, `platform_velocity_controller`), an available `odom -> base_link` transform, and a published map.
 
 ### Send goals
 
+> [!IMPORTANT]
+> Always pass `--use-sim-time` when sending goals against a running simulation so that `send_goal.py` stamps goals with Gazebo's simulation clock rather than host wall-clock time.
+
 ```bash
-ros2 run nav_worlds send_goal.py 4.0 0.0        # x, y in the map frame
-ros2 run nav_worlds send_goal.py 4.0 2.0 90     # x, y, yaw in degrees
-ros2 run nav_worlds send_goal.py 4.0 2.0 --timeout 240 --ns a200_0000
+ros2 run nav_worlds send_goal.py 4.0 0.0 --use-sim-time        # x, y in map frame
+ros2 run nav_worlds send_goal.py 4.0 2.0 90 --use-sim-time     # x, y, yaw in degrees
+ros2 run nav_worlds send_goal.py 4.0 2.0 --timeout 240 --ns a200_0000 --use-sim-time
 ```
 
-It reports SUCCEEDED/FAILED with the time taken and how close the robot actually
-got, so a run can be scored rather than eyeballed.
+It reports SUCCEEDED/FAILED with elapsed simulation time and remaining distance to goal.
+
+### Automated Simulation Sweeps (Dataset Collection)
+
+To collect reproducible datasets (ROS 2 MCAP bags and synchronized `.jsonl` telemetry logs) over batches of independent trajectories:
+
+```bash
+# Option A: Single-command end-to-end collection (recommended)
+# Generates waypoints, displays preview, and executes sweep with clean process management:
+ros2 run nav_worlds collect_dataset.py -n 10 --world warehouse -y --output-dir data/warehouse_10runs
+
+# Option B: Two-stage manual workflow
+# 1. Sample reachable, collision-free waypoints from a static map:
+ros2 run nav_worlds generate_waypoints.py \
+  --map-yaml $(ros2 pkg prefix clearpath_nav2_demos)/share/clearpath_nav2_demos/maps/warehouse.yaml \
+  --seed 42 -n 10 -o data/warehouse_waypoints.csv
+
+# 2. Run automated headless simulation sweep (Warm Reset default):
+ros2 run nav_worlds run_sweep.py \
+  --waypoints data/warehouse_waypoints.csv \
+  --max_runs 10
+
+# 3. Cold restart sweep (full simulator teardown per trajectory for 100% state isolation):
+ros2 run nav_worlds run_sweep.py \
+  --waypoints data/warehouse_waypoints.csv \
+  --cold-restart
+```
+
+Outputs are structured under `data/dataset_output/sweep_YYYYMMDD_HHMMSS/` containing `sweep_metadata.csv` and per-run folders with `state.jsonl` (timestamp, pose, twist, 720-beam scan) and `bag/` (MCAP).
 
 ### Save a map for `--localize`
 
-`maps/` ships empty, and `--localize` fails with a clear message until a map is
-there. Drive the world under SLAM, then:
+`maps/` ships empty, and `--localize` (`slam:=false`) fails with a clear message until a map is there. Drive the world under SLAM, then:
 
 ```bash
 ros2 run nav2_map_server map_saver_cli \
@@ -329,8 +353,7 @@ ros2 run nav2_map_server map_saver_cli \
 colcon build --packages-select nav_worlds --symlink-install
 ```
 
-The rebuild matters — `bringup.sh` reads the map from the *install* share
-directory, not from `src`.
+The rebuild matters — the launch reads maps from the *install* share directory.
 
 ### Why this package exists
 
@@ -342,10 +365,19 @@ directory, not from `src`.
   accepts the goal, plans a path, logs "Passing new path to controller", and
   never moves. `scan_self_filter.py` drops returns whose *endpoint* lands inside
   the footprint; the closest return goes from 0.401 m to 1.099 m and the 683
-  beams that see the world pass through byte-identical. Testing the endpoint is
-  what makes it work — the lidar sits at x=0.328 m, already inside the footprint,
-  so masking whole *bearings* would mask all 720 beams.
-- **Nothing may start until the sim is at speed** (§9).
+  beams that see the world pass through byte-identical.
+- **Deterministic bringup gating (`readiness_gate.py`).** A heavy world sits near
+  RTF 0.0005 while Gazebo loads meshes. `readiness_gate.py` verifies `/clock`,
+  lidar, controller activation (auto-respawning missing controllers), and TF
+  transforms before Nav2 activates, preventing controller timeout crashes and
+  lifecycle manager deadlocks (§9).
+- **Default global costmap rejects goals outside a 10-meter radius.**
+  Clearpath's default `a200/nav2.yaml` sets `global_costmap.rolling_window: true`
+  with dimensions $20\text{ m} \times 20\text{ m}$. Goals $>10\text{ m}$ away are
+  rejected by NavfnPlanner with `"Goal Coordinates was outside bounds"`.
+  `config/nav2_static.yaml` provides a dedicated static map configuration with
+  `rolling_window: false`. When navigating with `slam:=false`, `a200_point_nav.launch.py`
+  automatically routes to `nav2_static.yaml`.
 - **`clearpath_gz`'s `simulation.launch.py` only accepts its own six worlds** —
   its `world` argument carries a `choices` list, so `depot`, or any path, is
   rejected before Gazebo is reached. `launch/sim.launch.py` composes the same
@@ -508,7 +540,7 @@ here and documented in their own READMEs:
 
 | Package | What it is |
 |---|---|
-| `bug0_a300` | Bug0 reactive point-to-point for the Clearpath A300 Observer, off a flattened 3D lidar. Needs `a300_observer_sim.launch.py rviz_map:=true` for `map -> odom` |
-| `bug0_turtlebot4` | Bug0 and Bug2 for the TurtleBot4, off `/scan` — the original the A300 and go1 controllers were ported from |
-| `turtlebot4_gz_bringup_overlay` | Colorized maze world, TB4 spawn/SLAM/Nav2 launches |
-| `husky_bamboo_sim`, `husky_culm_detection`, `husky_exploration` | Bamboo-field mission stack for the A300 |
+| `bug0_a300` | Bug0 reactive point-to-point for the Clearpath A300 Observer, off a flattened 3D lidar |
+| `husky_bamboo_sim` | Gazebo Harmonic world, URDF, and RViz navigation launch for the Clearpath A300 |
+| `turtlebot4_bag_recorder` | Dynamic rosbag2 recorder specialized for TurtleBot4 topics and QoS profiles |
+

@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/source_a300_sim.bash"
 
-WS=/home/robopi/ros2_ws
+WS="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOG=/tmp/a300_sim_verify.log
 NS=a300_00000
 PASS=0
