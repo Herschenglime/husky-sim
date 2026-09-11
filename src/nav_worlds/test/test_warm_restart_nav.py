@@ -6,11 +6,12 @@ import threading
 from lifecycle_msgs.msg import State
 from lifecycle_msgs.srv import GetState
 from nav2_msgs.action import NavigateToPose
-from nav2_msgs.srv import ClearEntireCostmap
+from nav2_msgs.srv import ClearEntireCostmap, SetInitialPose
 import pytest
 import rclpy
 from rclpy.action import ActionServer
 from rclpy.executors import SingleThreadedExecutor
+from std_srvs.srv import Empty
 
 # Ensure scripts directory is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts')))
@@ -37,7 +38,21 @@ class MockNav2Stack(rclpy.node.Node):
         super().__init__('mock_nav2', namespace=namespace)
         self.cleared_local = False
         self.cleared_global = False
+        self.set_initial_pose_received = False
+        self.nomotion_update_received = False
         self.action_goals = []
+
+        # AMCL services
+        self.create_service(
+            SetInitialPose,
+            f'/{namespace}/set_initial_pose',
+            self._handle_set_initial_pose
+        )
+        self.create_service(
+            Empty,
+            f'/{namespace}/request_nomotion_update',
+            self._handle_nomotion_update
+        )
 
         # Costmap clearing services
         self.srv_local = self.create_service(
@@ -75,6 +90,14 @@ class MockNav2Stack(rclpy.node.Node):
             self.create_service(DeleteEntity, f'/world/{world}/remove', self._handle_remove)
         except ImportError:
             pass
+
+    def _handle_set_initial_pose(self, request, response):
+        self.set_initial_pose_received = True
+        return response
+
+    def _handle_nomotion_update(self, request, response):
+        self.nomotion_update_received = True
+        return response
 
     def _handle_clear_local(self, request, response):
         self.cleared_local = True
@@ -170,6 +193,8 @@ def test_warm_restart_costmap_clearing(ros_context):
             runner.init_ros(clock_timeout=0.2, use_sim_time=False)
             # Reset environment with x=1.0, y=2.0, yaw=0.0
             runner.reset_environment(1.0, 2.0, 0.0)
+            assert mock_nav.set_initial_pose_received is True
+            assert mock_nav.nomotion_update_received is True
             assert mock_nav.cleared_local is True
             assert mock_nav.cleared_global is True
         finally:

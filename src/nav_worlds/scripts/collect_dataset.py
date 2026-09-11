@@ -124,6 +124,9 @@ def main():
     sweep_group.add_argument('--bag-profile', type=str, default='standard',
                              choices=['minimal', 'standard', 'perception', 'full'],
                              help='Rosbag recording profile preset (default: standard)')
+    sweep_group.add_argument('--storage-id', type=str, default='mcap',
+                             choices=['mcap', 'sqlite3'],
+                             help='Rosbag storage backend (default: mcap)')
     sweep_group.add_argument('--add-topics', nargs='*', default=None,
                              help='Additional topics to record in rosbag')
     sweep_group.add_argument('--custom-topics', nargs='*', default=None,
@@ -226,7 +229,8 @@ def main():
         '--waypoints', waypoints_csv,
         '--sweep-dir', dest_dir,
         '--world', args.world,
-        '--bag-profile', args.bag_profile
+        '--bag-profile', args.bag_profile,
+        '--storage-id', args.storage_id
     ]
 
     if args.cold_restart:

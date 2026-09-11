@@ -15,6 +15,7 @@ install(PROGRAMS
   scripts/log_state.py
   scripts/run_sweep.py
   scripts/collect_dataset.py
+  scripts/bag_recorder.py
   DESTINATION lib/${PROJECT_NAME})
 
 ament_package()

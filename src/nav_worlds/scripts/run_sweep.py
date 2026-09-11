@@ -19,11 +19,13 @@ try:
         TwistStamped,
     )
     from lifecycle_msgs.srv import GetState
-    from nav2_msgs.srv import ClearEntireCostmap
+    from nav2_msgs.srv import ClearEntireCostmap, SetInitialPose
     from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+    from std_srvs.srv import Empty
 
     sys.path.insert(0, os.path.dirname(__file__))
     from send_goal import publish_goal_marker
+    from bag_recorder import RosbagRecorder
 except ImportError:
     rclpy = None
 
@@ -121,6 +123,7 @@ class SimulationRunner:
 
         os.makedirs(self.sweep_dir, exist_ok=True)
         self.bag_topics = resolve_bag_topics(self.args, self.ns)
+        self.storage_id = getattr(self.args, 'storage_id', 'mcap') or 'mcap'
         
         self.metadata_file = os.path.join(self.sweep_dir, "sweep_metadata.csv")
         with open(self.metadata_file, 'w', newline='') as f:
@@ -218,69 +221,58 @@ class ColdRestartRunner(SimulationRunner):
             '--output', state_file
         ])
 
-        # rosbag
-        if os.path.exists(bag_dir):
-            shutil.rmtree(bag_dir, ignore_errors=True)
-        bag_cmd = ['ros2', 'bag', 'record', '-o', bag_dir, '--use-sim-time'] + self.bag_topics
-        bag_proc = subprocess.Popen(bag_cmd)
-        
-        # Give them a second to initialize
-        time.sleep(2.0)
-        if bag_proc.poll() is not None:
-            raise RuntimeError(f"rosbag recording failed to start for {run_id} (exit code {bag_proc.returncode})")
-        
-        # 3. Main Launch
-        x = wp['start_x']
-        y = wp['start_y']
-        yaw = wp['start_yaw_rad']
-        goal_x = wp['goal_x']
-        goal_y = wp['goal_y']
-        
-        # If goal_yaw_rad isn't in the CSV, convert from goal_yaw_deg
-        if 'goal_yaw_rad' in wp:
-            goal_yaw = wp['goal_yaw_rad']
-        else:
-            goal_yaw = str(float(wp['goal_yaw_deg']) * 3.14159 / 180.0)
+        try:
+            with RosbagRecorder(
+                bag_dir,
+                self.bag_topics,
+                storage_id=self.storage_id,
+                use_sim_time=True
+            ):
+                # 3. Main Launch
+                x = wp['start_x']
+                y = wp['start_y']
+                yaw = wp['start_yaw_rad']
+                goal_x = wp['goal_x']
+                goal_y = wp['goal_y']
+                
+                # If goal_yaw_rad isn't in the CSV, convert from goal_yaw_deg
+                if 'goal_yaw_rad' in wp:
+                    goal_yaw = wp['goal_yaw_rad']
+                else:
+                    goal_yaw = str(float(wp['goal_yaw_deg']) * 3.14159 / 180.0)
 
-        headless_str = 'false' if self.args.gui else 'true'
-        rviz_str = 'true' if self.args.rviz else 'false'
-        
-        launch_cmd = [
-            'ros2', 'launch', 'nav_worlds', 'a200_point_nav.launch.py',
-            f'world:={self.args.world}',
-            f'headless:={headless_str}',
-            f'rviz:={rviz_str}',
-            f'x:={x}', f'y:={y}', f'yaw:={yaw}',
-            f'goal_x:={goal_x}', f'goal_y:={goal_y}', f'goal_yaw:={goal_yaw}',
-            'run_goal:=true',
-            'slam:=false'
-        ]
-        
-        print(f"Launching simulation: {' '.join(launch_cmd)}")
-        try:
-            # send_goal.py has a timeout of 180s. We'll allow 400s max to account for bootup.
-            subprocess.run(launch_cmd, timeout=400)
-            status = 'completed'
-        except subprocess.TimeoutExpired:
-            print("Launch command timed out!")
-            status = 'timeout'
-        except Exception as e:
-            print(f"Launch command failed: {e}")
-            status = 'failed'
-            
-        # 4. Teardown
-        logger_proc.terminate()
-        bag_proc.terminate()
-        
-        try:
-            logger_proc.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            logger_proc.kill()
-            
-        try:
-            bag_proc.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            bag_proc.kill()
+                headless_str = 'false' if self.args.gui else 'true'
+                rviz_str = 'true' if self.args.rviz else 'false'
+                
+                launch_cmd = [
+                    'ros2', 'launch', 'nav_worlds', 'a200_point_nav.launch.py',
+                    f'world:={self.args.world}',
+                    f'headless:={headless_str}',
+                    f'rviz:={rviz_str}',
+                    f'x:={x}', f'y:={y}', f'yaw:={yaw}',
+                    f'goal_x:={goal_x}', f'goal_y:={goal_y}', f'goal_yaw:={goal_yaw}',
+                    'run_goal:=true',
+                    'slam:=false'
+                ]
+                
+                print(f"Launching simulation: {' '.join(launch_cmd)}")
+                try:
+                    # send_goal.py has a timeout of 180s. We'll allow 400s max to account for bootup.
+                    subprocess.run(launch_cmd, timeout=400)
+                    status = 'completed'
+                except subprocess.TimeoutExpired:
+                    print("Launch command timed out!")
+                    status = 'timeout'
+                except Exception as e:
+                    print(f"Launch command failed: {e}")
+                    status = 'failed'
+        finally:
+            # 4. Teardown
+            logger_proc.terminate()
+            try:
+                logger_proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                logger_proc.kill()
             
         return status
 
@@ -310,6 +302,8 @@ class WarmRestartRunner(SimulationRunner):
 
         self.pub_cmd = self.node.create_publisher(TwistStamped, f'/{self.ns}/cmd_vel', 10)
         self.pub_init = self.node.create_publisher(PoseWithCovarianceStamped, f'/{self.ns}/initialpose', 10)
+        self.amcl_set_initial_pose_srv = self.node.create_client(SetInitialPose, f'/{self.ns}/set_initial_pose')
+        self.amcl_nomotion_update_srv = self.node.create_client(Empty, f'/{self.ns}/request_nomotion_update')
         try:
             from ros_gz_interfaces.srv import SetEntityPose
             self.set_pose_client = self.node.create_client(SetEntityPose, f'/world/{self.args.world}/set_pose')
@@ -399,10 +393,29 @@ class WarmRestartRunner(SimulationRunner):
         msg.pose.covariance[7] = 0.25
         msg.pose.covariance[35] = 0.068
 
+        # Try AMCL set_initial_pose service first
+        if hasattr(self, 'amcl_set_initial_pose_srv') and self.amcl_set_initial_pose_srv.wait_for_service(timeout_sec=0.2):
+            try:
+                req_init = SetInitialPose.Request()
+                req_init.pose = msg
+                future_init = self.amcl_set_initial_pose_srv.call_async(req_init)
+                rclpy.spin_until_future_complete(self.node, future_init, timeout_sec=1.0)
+            except Exception as e:
+                print(f"[DEBUG] set_initial_pose service call skipped: {e}")
+
+        # Always publish initialpose to ensure all listeners (RViz, EKF) receive it
         for _ in range(3):
             msg.header.stamp = self.node.get_clock().now().to_msg()
             self.pub_init.publish(msg)
-            rclpy.spin_once(self.node, timeout_sec=0.1)
+            rclpy.spin_once(self.node, timeout_sec=0.05)
+
+        # Trigger AMCL nomotion update to force map -> odom transform broadcast without waiting for wheel motion
+        if hasattr(self, 'amcl_nomotion_update_srv') and self.amcl_nomotion_update_srv.wait_for_service(timeout_sec=0.2):
+            try:
+                future_nomotion = self.amcl_nomotion_update_srv.call_async(Empty.Request())
+                rclpy.spin_until_future_complete(self.node, future_nomotion, timeout_sec=1.0)
+            except Exception as e:
+                print(f"[DEBUG] request_nomotion_update service call skipped: {e}")
 
         try:
             from robot_localization.srv import SetPose
@@ -430,9 +443,6 @@ class WarmRestartRunner(SimulationRunner):
                     print(f"[WARN] Failed to clear {name}.")
             else:
                 print(f"[WARN] {name} clear service unavailable.")
-
-        # Brief spin to process pending callbacks / transforms
-        rclpy.spin_once(self.node, timeout_sec=0.2)
 
     def wait_for_nav2_ready(self, timeout_sec=180.0):
         print(f"Waiting for Nav2 to become active in namespace /{self.ns}...")
@@ -591,32 +601,25 @@ class WarmRestartRunner(SimulationRunner):
             '--output', state_file
         ])
 
-        if os.path.exists(bag_dir):
-            shutil.rmtree(bag_dir, ignore_errors=True)
-        bag_cmd = ['ros2', 'bag', 'record', '-o', bag_dir, '--use-sim-time'] + self.bag_topics
-        bag_proc = subprocess.Popen(bag_cmd)
-        time.sleep(1.0)
-        if bag_proc.poll() is not None:
-            raise RuntimeError(f"rosbag recording failed to start for {run_id} (exit code {bag_proc.returncode})")
-
-        # 3. Execute Goal in-process via BasicNavigator
-        status = self.execute_nav_goal(wp)
-
-        # 4. Teardown Loggers
-        logger_proc.terminate()
-        bag_proc.terminate()
-
         try:
-            logger_proc.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            logger_proc.kill()
-        try:
-            bag_proc.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            bag_proc.kill()
+            with RosbagRecorder(
+                bag_dir,
+                self.bag_topics,
+                storage_id=self.storage_id,
+                use_sim_time=True
+            ):
+                # 3. Execute Goal in-process via BasicNavigator
+                status = self.execute_nav_goal(wp)
+        finally:
+            # 4. Teardown Loggers
+            logger_proc.terminate()
+            try:
+                logger_proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                logger_proc.kill()
 
-        # Clean up any orphaned log_state
-        subprocess.run(['pkill', '-9', '-f', 'log_state.py'], capture_output=True)
+            # Clean up any orphaned log_state
+            subprocess.run(['pkill', '-9', '-f', 'log_state.py'], capture_output=True)
 
         return status
 
@@ -642,6 +645,30 @@ class WarmRestartRunner(SimulationRunner):
         goal_pose.pose.position.y = goal_y
         goal_pose.pose.orientation.z = math.sin(goal_yaw_rad / 2.0)
         goal_pose.pose.orientation.w = math.cos(goal_yaw_rad / 2.0)
+
+        # Pre-flight check: ensure path is plannable from current robot pose before issuing navigation goal
+        if (
+            hasattr(self.navigator, 'compute_path_to_pose_client')
+            and self.navigator.compute_path_to_pose_client.server_is_ready()
+        ):
+            print("Verifying path plan from current pose to goal...")
+            start_check = time.time()
+            path_confirmed = False
+            while time.time() - start_check < 5.0:
+                try:
+                    path = self.navigator.getPath(
+                        start=PoseStamped(), goal=goal_pose, use_start=False
+                    )
+                    if path is not None and len(path.poses) > 0:
+                        path_confirmed = True
+                        break
+                except Exception as e:
+                    print(f"[DEBUG] Pre-flight getPath query failed: {e}")
+                rclpy.spin_once(self.node, timeout_sec=0.1)
+            if not path_confirmed:
+                print("[DEBUG] Pre-flight path check timed out; proceeding with goToPose...")
+            else:
+                print(f"Path verified ({len(path.poses)} waypoints).")
 
         print(
             f'Executing goal: ({goal_x:.2f}, {goal_y:.2f}, yaw={goal_yaw_rad:.3f} rad)...'
@@ -709,6 +736,7 @@ def main():
     parser.add_argument('--disable-lidar2d', action='store_true', help='Disable 2D Lidar in rosbag')
     parser.add_argument('--sweep-dir', type=str, default=None, help='Explicit directory for this sweep (overrides output_dir auto-timestamping)')
     parser.add_argument('--bag-profile', type=str, default='standard', choices=['minimal', 'standard', 'perception', 'full'], help='Rosbag topic profile preset (default: standard)')
+    parser.add_argument('--storage-id', type=str, default='mcap', choices=['mcap', 'sqlite3'], help='Rosbag storage backend (default: mcap)')
     parser.add_argument('--add-topics', nargs='*', default=None, help='Additional topics to record in rosbag')
     parser.add_argument('--custom-topics', nargs='*', default=None, help='Explicit full list of topics to record in rosbag (overrides profile)')
     parser.add_argument('--cold-restart', action='store_true', help='Use cold restart (relaunch simulation for each trajectory instead of warm reset)')
