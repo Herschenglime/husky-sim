@@ -28,6 +28,8 @@ import time
 
 from controller_manager_msgs.srv import ListControllers
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from lifecycle_msgs.msg import Transition
+from lifecycle_msgs.srv import ChangeState, GetState
 from nav_msgs.msg import OccupancyGrid
 import rclpy
 from rclpy.node import Node
@@ -312,59 +314,70 @@ class ReadinessGate(Node):
         self.get_logger().info('=== [Stage 2/2: Map Gate] Map & localization verified! ===')
         return True
 
-    def _check_slam_lifecycle(self):
-        """Check slam_toolbox lifecycle state and transition if stuck in unconfigured/inactive."""
-        node_name = f'/{self.ns}/slam_toolbox' if self.ns else '/slam_toolbox'
+    def _manage_node_lifecycle(self, node_name: str):
+        """Query lifecycle state via service and activate if unconfigured or inactive."""
+        get_srv = f'{node_name}/get_state'
+        change_srv = f'{node_name}/change_state'
+
+        if not hasattr(self, '_lifecycle_clients'):
+            self._lifecycle_clients = {}
+
+        if get_srv not in self._lifecycle_clients:
+            self._lifecycle_clients[get_srv] = self.create_client(GetState, get_srv)
+        if change_srv not in self._lifecycle_clients:
+            self._lifecycle_clients[change_srv] = self.create_client(ChangeState, change_srv)
+
+        client_get = self._lifecycle_clients[get_srv]
+        client_change = self._lifecycle_clients[change_srv]
+
+        if not client_get.service_is_ready():
+            return
+
         try:
-            res = subprocess.run(
-                ['ros2', 'lifecycle', 'get', node_name],
-                capture_output=True, text=True, check=False, timeout=5
-            )
-            state = res.stdout.strip().split()[0] if res.stdout else ''
-            if state == 'unconfigured':
+            req = GetState.Request()
+            future = client_get.call_async(req)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=0.5)
+            if not future.done() or future.result() is None:
+                return
+
+            current_label = future.result().current_state.label
+            if current_label == 'unconfigured':
                 self.get_logger().warn(
                     f'{node_name} is unconfigured; triggering configure and activate...'
                 )
-                subprocess.run(['ros2', 'lifecycle', 'set', node_name, 'configure'],
-                               check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-                subprocess.run(['ros2', 'lifecycle', 'set', node_name, 'activate'],
-                               check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-            elif state == 'inactive':
+                if client_change.wait_for_service(timeout_sec=1.0):
+                    req_c = ChangeState.Request()
+                    req_c.transition.id = Transition.TRANSITION_CONFIGURE
+                    f_c = client_change.call_async(req_c)
+                    rclpy.spin_until_future_complete(self, f_c, timeout_sec=1.0)
+
+                    req_a = ChangeState.Request()
+                    req_a.transition.id = Transition.TRANSITION_ACTIVATE
+                    f_a = client_change.call_async(req_a)
+                    rclpy.spin_until_future_complete(self, f_a, timeout_sec=1.0)
+            elif current_label == 'inactive':
                 self.get_logger().warn(
                     f'{node_name} is inactive; triggering activate...'
                 )
-                subprocess.run(['ros2', 'lifecycle', 'set', node_name, 'activate'],
-                               check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                if client_change.wait_for_service(timeout_sec=1.0):
+                    req_a = ChangeState.Request()
+                    req_a.transition.id = Transition.TRANSITION_ACTIVATE
+                    f_a = client_change.call_async(req_a)
+                    rclpy.spin_until_future_complete(self, f_a, timeout_sec=1.0)
         except Exception as e:
-            self.get_logger().debug(f'Lifecycle check exception: {e}')
+            self.get_logger().debug(f'Lifecycle service check failed on {node_name}: {e}')
+
+    def _check_slam_lifecycle(self):
+        """Check slam_toolbox lifecycle state and transition if stuck in unconfigured/inactive."""
+        node_name = f'/{self.ns}/slam_toolbox' if self.ns else '/slam_toolbox'
+        self._manage_node_lifecycle(node_name)
 
     def _check_localization_lifecycle(self):
         """Check map_server and amcl lifecycle states and transition if stranded."""
         nodes = ['map_server', 'amcl']
         for n in nodes:
             node_name = f'/{self.ns}/{n}' if self.ns else f'/{n}'
-            try:
-                res = subprocess.run(
-                    ['ros2', 'lifecycle', 'get', node_name],
-                    capture_output=True, text=True, check=False, timeout=5
-                )
-                state = res.stdout.strip().split()[0] if res.stdout else ''
-                if state == 'unconfigured':
-                    self.get_logger().warn(
-                        f'{node_name} is unconfigured; triggering configure and activate...'
-                    )
-                    subprocess.run(['ros2', 'lifecycle', 'set', node_name, 'configure'],
-                                   check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-                    subprocess.run(['ros2', 'lifecycle', 'set', node_name, 'activate'],
-                                   check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-                elif state == 'inactive':
-                    self.get_logger().warn(
-                        f'{node_name} is inactive; triggering activate...'
-                    )
-                    subprocess.run(['ros2', 'lifecycle', 'set', node_name, 'activate'],
-                                   check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-            except Exception as e:
-                self.get_logger().debug(f'Lifecycle check exception on {node_name}: {e}')
+            self._manage_node_lifecycle(node_name)
 
 
 def main(args=None):

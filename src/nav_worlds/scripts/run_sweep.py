@@ -88,6 +88,27 @@ class SimulationRunner:
         else:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.sweep_dir = os.path.join(self.args.output_dir, f"sweep_{timestamp}")
+
+        if os.path.exists(self.sweep_dir):
+            existing = set(os.listdir(self.sweep_dir))
+            existing -= {'waypoints.csv', 'waypoints_preview.png'}
+            if existing:
+                if not getattr(self.args, 'overwrite', False):
+                    print(f"Error: Sweep directory '{self.sweep_dir}' already exists and is not empty.", file=sys.stderr)
+                    print("Specify a different directory or pass --overwrite to replace existing data.", file=sys.stderr)
+                    sys.exit(1)
+                else:
+                    print(f"[WARN] Sweep directory '{self.sweep_dir}' exists and is not empty. --overwrite specified: clearing previous bags and run directories...")
+                    for item in os.listdir(self.sweep_dir):
+                        item_path = os.path.join(self.sweep_dir, item)
+                        if os.path.isdir(item_path) and item.startswith('run_'):
+                            shutil.rmtree(item_path, ignore_errors=True)
+                        elif item in ('sweep_metadata.csv', 'sim_launch.log'):
+                            try:
+                                os.remove(item_path)
+                            except OSError:
+                                pass
+
         os.makedirs(self.sweep_dir, exist_ok=True)
         self.bag_topics = resolve_bag_topics(self.args, self.ns)
         
@@ -130,26 +151,30 @@ class SimulationRunner:
             sys.exit(130)
 
     def cleanup_orphans(self):
-        pass
-
-    def run_trajectory(self, run_id, wp):
-        raise NotImplementedError()
-
-
-class ColdRestartRunner(SimulationRunner):
-    def cleanup_orphans(self):
         # Clean up Gazebo and specific scripts
         subprocess.run(['pkill', '-9', '-f', 'gz sim'], capture_output=True)
         subprocess.run(['pkill', '-9', '-f', 'log_state.py'], capture_output=True)
         
-        # Clean up ROS 2 nodes, but never kill ourselves or our parent process
+        # Clean up ROS 2 nodes, but never kill ourselves or any of our ancestors (e.g. wrapper shell)
         my_pid = os.getpid()
-        parent_pid = os.getppid()
+        protected_pids = {my_pid}
+        
+        try:
+            curr = my_pid
+            while curr > 1:
+                out = subprocess.check_output(['ps', '-o', 'ppid=', '-p', str(curr)]).decode().strip()
+                if not out:
+                    break
+                curr = int(out)
+                protected_pids.add(curr)
+        except Exception:
+            pass
+
         try:
             out = subprocess.check_output(['pgrep', '-f', 'ros2']).decode().split()
             for p in out:
                 pid = int(p)
-                if pid not in (my_pid, parent_pid):
+                if pid not in protected_pids:
                     try:
                         os.kill(pid, 9)
                     except ProcessLookupError:
@@ -157,6 +182,10 @@ class ColdRestartRunner(SimulationRunner):
         except (subprocess.CalledProcessError, ValueError):
             pass
         time.sleep(1.0)
+
+    def run_trajectory(self, run_id, wp):
+        raise NotImplementedError()
+
 
     def run_trajectory(self, run_id, wp):
         # 1. Pre-flight cleanup
@@ -174,15 +203,20 @@ class ColdRestartRunner(SimulationRunner):
             '--odom_topic', f'/{self.ns}/platform/odom/filtered',
             '--cmd_vel_topic', f'/{self.ns}/cmd_vel',
             '--scan_topic', f'/{self.ns}/sensors/lidar2d_0/scan_filtered',
+            '--target_frame', 'map',
             '--output', state_file
         ])
 
         # rosbag
+        if os.path.exists(bag_dir):
+            shutil.rmtree(bag_dir, ignore_errors=True)
         bag_cmd = ['ros2', 'bag', 'record', '-o', bag_dir, '--use-sim-time'] + self.bag_topics
         bag_proc = subprocess.Popen(bag_cmd)
         
         # Give them a second to initialize
         time.sleep(2.0)
+        if bag_proc.poll() is not None:
+            raise RuntimeError(f"rosbag recording failed to start for {run_id} (exit code {bag_proc.returncode})")
         
         # 3. Main Launch
         x = wp['start_x']
@@ -248,27 +282,6 @@ class WarmRestartRunner(SimulationRunner):
         self.pub_cmd = None
         self.pub_init = None
 
-    def cleanup_orphans(self):
-        # Clean up Gazebo and specific scripts
-        subprocess.run(['pkill', '-9', '-f', 'gz sim'], capture_output=True)
-        subprocess.run(['pkill', '-9', '-f', 'log_state.py'], capture_output=True)
-        
-        # Clean up ROS 2 nodes, but never kill ourselves or our parent process
-        my_pid = os.getpid()
-        parent_pid = os.getppid()
-        try:
-            out = subprocess.check_output(['pgrep', '-f', 'ros2']).decode().split()
-            for p in out:
-                pid = int(p)
-                if pid not in (my_pid, parent_pid):
-                    try:
-                        os.kill(pid, 9)
-                    except ProcessLookupError:
-                        pass
-        except (subprocess.CalledProcessError, ValueError):
-            pass
-        time.sleep(1.0)
-
     def init_ros(self):
         if rclpy is None:
             raise RuntimeError("ROS 2 Python packages (rclpy, geometry_msgs, nav2_msgs) not found. Did you source setup.bash?")
@@ -311,7 +324,7 @@ class WarmRestartRunner(SimulationRunner):
         if not ok:
             print("[WARN] Gazebo set_pose service call did not confirm success. Check world or model name.")
 
-        # 3. Publish AMCL initialpose
+        # 3. Publish AMCL initialpose and reset robot_localization EKF
         msg = PoseWithCovarianceStamped()
         msg.header.stamp = self.node.get_clock().now().to_msg()
         msg.header.frame_id = 'map'
@@ -328,6 +341,17 @@ class WarmRestartRunner(SimulationRunner):
             msg.header.stamp = self.node.get_clock().now().to_msg()
             self.pub_init.publish(msg)
             rclpy.spin_once(self.node, timeout_sec=0.1)
+
+        try:
+            from robot_localization.srv import SetPose
+            ekf_client = self.node.create_client(SetPose, f'/{self.ns}/set_pose')
+            if ekf_client.wait_for_service(timeout_sec=1.0):
+                req = SetPose.Request()
+                req.pose = msg
+                future = ekf_client.call_async(req)
+                rclpy.spin_until_future_complete(self.node, future, timeout_sec=1.0)
+        except Exception as e:
+            print(f"[DEBUG] EKF set_pose skipped or failed: {e}")
 
         # 4. Clear costmaps
         for srv_name in [f'/{self.ns}/local_costmap/clear_entirely_local_costmap',
@@ -467,12 +491,17 @@ class WarmRestartRunner(SimulationRunner):
             '--odom_topic', f'/{self.ns}/platform/odom/filtered',
             '--cmd_vel_topic', f'/{self.ns}/cmd_vel',
             '--scan_topic', f'/{self.ns}/sensors/lidar2d_0/scan_filtered',
+            '--target_frame', 'map',
             '--output', state_file
         ])
 
+        if os.path.exists(bag_dir):
+            shutil.rmtree(bag_dir, ignore_errors=True)
         bag_cmd = ['ros2', 'bag', 'record', '-o', bag_dir, '--use-sim-time'] + self.bag_topics
         bag_proc = subprocess.Popen(bag_cmd)
         time.sleep(1.0)
+        if bag_proc.poll() is not None:
+            raise RuntimeError(f"rosbag recording failed to start for {run_id} (exit code {bag_proc.returncode})")
 
         # 3. Execute Goal via send_goal.py
         if 'goal_yaw_deg' in wp:
@@ -537,6 +566,7 @@ def main():
     parser.add_argument('--cold-restart', action='store_true', help='Use cold restart (relaunch simulation for each trajectory instead of warm reset)')
     parser.add_argument('--warm-reset', action='store_true', default=True, help='Use warm reset (default: keeps simulation running between trajectories)')
     parser.add_argument('-v', '--verbose', action='store_true', help='Stream simulation launch output directly to the terminal in real time')
+    parser.add_argument('--overwrite', action='store_true', help='Allow overwriting existing sweep directory, clearing old bags and run data')
     
     args = parser.parse_args()
     

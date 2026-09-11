@@ -136,6 +136,8 @@ def main():
                              help='Launch RViz visualization (rviz:=true)')
     sweep_group.add_argument('-v', '--verbose', action='store_true',
                              help='Stream underlying simulation and node outputs to terminal in real time')
+    sweep_group.add_argument('--overwrite', action='store_true',
+                             help='Allow overwriting existing destination directory, deleting previous run bags and logs')
 
     args = parser.parse_args()
 
@@ -145,6 +147,23 @@ def main():
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dest_dir = os.path.abspath(os.path.join('data', 'dataset_output', f"sweep_{timestamp}"))
+
+    if os.path.exists(dest_dir) and os.listdir(dest_dir):
+        if not args.overwrite:
+            print(f"Error: Destination directory '{dest_dir}' already exists and is not empty.", file=sys.stderr)
+            print("Specify a different --output-dir or pass --overwrite to replace existing data.", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print(f"[WARN] Destination directory '{dest_dir}' exists and is not empty. --overwrite specified: cleaning previous run data...")
+            for item in os.listdir(dest_dir):
+                item_path = os.path.join(dest_dir, item)
+                if os.path.isdir(item_path) and item.startswith('run_'):
+                    shutil.rmtree(item_path, ignore_errors=True)
+                elif item in ('sweep_metadata.csv', 'sim_launch.log', 'waypoints.csv', 'waypoints_preview.png'):
+                    try:
+                        os.remove(item_path)
+                    except OSError:
+                        pass
 
     os.makedirs(dest_dir, exist_ok=True)
     print(f"Dataset destination directory: {dest_dir}")
@@ -222,6 +241,8 @@ def main():
         sweep_cmd.extend(['--custom-topics'] + args.custom_topics)
     if args.verbose:
         sweep_cmd.append('--verbose')
+    if args.overwrite:
+        sweep_cmd.append('--overwrite')
 
     print("\n" + "=" * 60)
     print("Launching simulation sweep...")

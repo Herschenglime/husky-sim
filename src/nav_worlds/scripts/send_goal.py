@@ -57,7 +57,10 @@ def main():
     ap.add_argument('--frame', default='map')
     ap.add_argument('--world', default='', help='Gazebo world name for visual marker spawning')
     ap.add_argument('--timeout', type=float, default=180.0)
-    ap.add_argument('--use-sim-time', action='store_true', default=None)
+    ap.add_argument('--use-sim-time', dest='use_sim_time', action='store_true', default=True,
+                    help='Use simulation clock from /clock (default: True)')
+    ap.add_argument('--no-sim-time', dest='use_sim_time', action='store_false',
+                    help='Use wall clock instead of simulation clock')
 
     # Filter out ROS 2 specific arguments injected when run via launch Node
     try:
@@ -71,13 +74,17 @@ def main():
 
     navigator = BasicNavigator(node_name='send_goal', namespace=args.ns)
 
-    if args.use_sim_time is not None:
-        navigator.set_parameters([
-            rclpy.parameter.Parameter('use_sim_time', rclpy.Parameter.Type.BOOL, args.use_sim_time)
-        ])
+    navigator.set_parameters([
+        rclpy.parameter.Parameter('use_sim_time', rclpy.Parameter.Type.BOOL, args.use_sim_time)
+    ])
 
     print(f'Waiting for Nav2 to become active in namespace /{args.ns}...')
     navigator.waitUntilNav2Active(localizer='robot_localization')
+    for server_name in ['planner_server', 'controller_server']:
+        try:
+            navigator._waitForNodeToActivate(server_name)
+        except Exception as e:
+            navigator.get_logger().warn(f'Wait for {server_name} returned: {e}')
 
     spawn_marker(args.world, args.x, args.y)
 
@@ -99,18 +106,22 @@ def main():
         sys.exit(1)
 
     print('goal accepted, navigating...')
-    start = time.time()
+    clock = navigator.get_clock()
+    start_sim = clock.now()
+    start_wall = time.time()
     last_feedback_time = 0.0
 
     while not navigator.isTaskComplete():
-        now = time.time()
+        now_wall = time.time()
         feedback = navigator.getFeedback()
-        if feedback and (now - last_feedback_time >= 5.0):
-            last_feedback_time = now
+        if feedback and (now_wall - last_feedback_time >= 5.0):
+            last_feedback_time = now_wall
             print(f'  distance remaining: {feedback.distance_remaining:.2f} m')
 
-        if now - start > args.timeout:
-            print(f'FAIL: timed out after {args.timeout:.0f} s')
+        now_sim = clock.now()
+        elapsed_sim = (now_sim - start_sim).nanoseconds * 1e-9
+        if elapsed_sim > args.timeout:
+            print(f'FAIL: timed out after {args.timeout:.0f} s (sim time)')
             navigator.cancelTask()
             report_distance(navigator.getFeedback())
             navigator.destroy_node()
@@ -118,7 +129,8 @@ def main():
             sys.exit(1)
 
     result = navigator.getResult()
-    elapsed = time.time() - start
+    elapsed_sim = (clock.now() - start_sim).nanoseconds * 1e-9
+    elapsed_wall = time.time() - start_wall
     ok = (result == TaskResult.SUCCEEDED)
 
     if ok:
@@ -128,7 +140,7 @@ def main():
     else:
         status_str = 'FAILED'
 
-    print(f'{status_str} after {elapsed:.0f} s (status {navigator.status})')
+    print(f'{status_str} after {elapsed_sim:.1f} s sim ({elapsed_wall:.1f} s wall) (status {navigator.status})')
     report_distance(navigator.getFeedback())
 
     navigator.destroy_node()

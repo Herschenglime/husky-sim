@@ -7,6 +7,10 @@ system:
   ros2:
     namespace: a200_0000
 platform:
+  extras:
+    ros_parameters:
+      platform_velocity_controller:
+        cmd_vel_timeout: 1.0
   attachments:
     - name: front_bumper
       type: a200.bumper

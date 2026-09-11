@@ -5,6 +5,7 @@ from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist, TwistStamped
 from sensor_msgs.msg import LaserScan
+import tf2_ros
 import argparse
 import json
 import math
@@ -12,7 +13,8 @@ import sys
 import os
 
 class StateLogger(Node):
-    def __init__(self, odom_topic, cmd_vel_topic, scan_topic, output_file, stamped_cmd_vel=True):
+    def __init__(self, odom_topic, cmd_vel_topic, scan_topic, output_file,
+                 target_frame='map', base_frame='base_link', stamped_cmd_vel=True):
         super().__init__('state_logger')
         
         self.set_parameters([
@@ -20,6 +22,8 @@ class StateLogger(Node):
         ])
         
         self.output_file = output_file
+        self.target_frame = target_frame
+        self.base_frame = base_frame
         try:
             self.file = open(self.output_file, 'w')
         except Exception as e:
@@ -30,8 +34,11 @@ class StateLogger(Node):
         self.latest_odom = None
         self.latest_cmd_vel = None
 
+        # TF Buffer & Listener for map frame tracking
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
         # Subscriptions
-        # Use sensor data QoS for scan just in case it's published with that profile
         from rclpy.qos import qos_profile_sensor_data
         
         self.odom_sub = self.create_subscription(
@@ -44,7 +51,11 @@ class StateLogger(Node):
             LaserScan, scan_topic, self.scan_cb, qos_profile_sensor_data)
 
         self.get_logger().info(f"State logger initialized. Writing to {self.output_file}")
-        self.get_logger().info(f"Topics: odom={odom_topic}, cmd_vel={cmd_vel_topic} (type={'TwistStamped' if stamped_cmd_vel else 'Twist'}), scan={scan_topic}")
+        self.get_logger().info(
+            f"Topics: odom={odom_topic}, cmd_vel={cmd_vel_topic} "
+            f"(type={'TwistStamped' if stamped_cmd_vel else 'Twist'}), scan={scan_topic}"
+        )
+        self.get_logger().info(f"Tracking transform: {self.target_frame} -> {self.base_frame}")
 
     def odom_cb(self, msg: Odometry):
         self.latest_odom = msg
@@ -56,27 +67,55 @@ class StateLogger(Node):
             self.latest_cmd_vel = msg
 
     def get_yaw_from_quaternion(self, q):
-        # standard euler from quaternion for yaw
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
     def scan_cb(self, msg: LaserScan):
-        # We drive the logging from the scan callback since it's typically lower 
-        # frequency than odom and contains the large array. This avoids duplicate 
-        # scan arrays in the log.
+        # Drive logging from scan callback to avoid duplicate entries
         if self.latest_odom is None:
-            # wait until we have at least one odom
             return
 
         # Time
         stamp = msg.header.stamp
         time_sec = stamp.sec + stamp.nanosec * 1e-9
 
-        # Odom state
+        # Odom state (fallback & diagnostics)
         pos = self.latest_odom.pose.pose.position
         q = self.latest_odom.pose.pose.orientation
-        yaw = self.get_yaw_from_quaternion(q)
+        odom_yaw = self.get_yaw_from_quaternion(q)
+
+        # Resolve position in target frame (e.g. map) if available
+        x = pos.x
+        y = pos.y
+        yaw = odom_yaw
+
+        if self.tf_buffer is not None:
+            try:
+                t = self.tf_buffer.lookup_transform(
+                    self.target_frame,
+                    self.base_frame,
+                    rclpy.time.Time()
+                )
+                x = t.transform.translation.x
+                y = t.transform.translation.y
+                yaw = self.get_yaw_from_quaternion(t.transform.rotation)
+            except Exception:
+                # Try with namespace prefix on base_frame if root lookup failed
+                try:
+                    ns_prefix = self.get_namespace().strip('/')
+                    if ns_prefix and not self.base_frame.startswith(ns_prefix):
+                        alt_base = f"{ns_prefix}/{self.base_frame}"
+                        t = self.tf_buffer.lookup_transform(
+                            self.target_frame,
+                            alt_base,
+                            rclpy.time.Time()
+                        )
+                        x = t.transform.translation.x
+                        y = t.transform.translation.y
+                        yaw = self.get_yaw_from_quaternion(t.transform.rotation)
+                except Exception:
+                    pass
 
         # Cmd vel state
         if self.latest_cmd_vel is not None:
@@ -86,20 +125,21 @@ class StateLogger(Node):
             vx = 0.0
             wz = 0.0
 
-        # Replace infinite values in ranges with a high number or None to be JSON compliant
-        # JSON standard doesn't strictly support NaN or Infinity (though python json dump does, 
-        # it outputs non-standard unquoted Infinity). Let's convert them to None for safety.
+        # JSON compliant ranges
         safe_ranges = [
             r if not math.isinf(r) and not math.isnan(r) else None 
             for r in msg.ranges
         ]
 
-        # Construct JSON
+        # Construct JSON with map frame and raw odom
         data = {
             "timestamp": time_sec,
-            "x": pos.x,
-            "y": pos.y,
+            "x": x,
+            "y": y,
             "yaw": yaw,
+            "odom_x": pos.x,
+            "odom_y": pos.y,
+            "odom_yaw": odom_yaw,
             "vx": vx,
             "wz": wz,
             "scan": safe_ranges
@@ -120,6 +160,8 @@ def main(args=None):
     parser.add_argument('--odom_topic', type=str, default='/odom', help='Odometry topic')
     parser.add_argument('--cmd_vel_topic', type=str, default='/cmd_vel', help='Command velocity topic')
     parser.add_argument('--scan_topic', type=str, default='/scan', help='LaserScan topic')
+    parser.add_argument('--target_frame', type=str, default='map', help='Global target frame for x, y, yaw')
+    parser.add_argument('--base_frame', type=str, default='base_link', help='Robot base frame to resolve')
     parser.add_argument('--output', type=str, default='state.jsonl', help='Output JSONL file')
     parser.add_argument('--unstamped_cmd_vel', action='store_true', help='Subscribe to Twist instead of TwistStamped')
     
@@ -133,6 +175,8 @@ def main(args=None):
         cmd_vel_topic=parsed_args.cmd_vel_topic,
         scan_topic=parsed_args.scan_topic,
         output_file=parsed_args.output,
+        target_frame=parsed_args.target_frame,
+        base_frame=parsed_args.base_frame,
         stamped_cmd_vel=not parsed_args.unstamped_cmd_vel
     )
     
