@@ -14,6 +14,7 @@ import json
 import math
 import sys
 import os
+import threading
 
 
 class StateLogger(LifecycleNode):
@@ -50,6 +51,7 @@ class StateLogger(LifecycleNode):
         self.latest_odom = None
         self.latest_cmd_vel = None
         self._is_active = False
+        self._file_lock = threading.Lock()  # guards self.file across scan_cb and _close_file
 
         # Communication handles (created in on_configure)
         self.tf_buffer = None
@@ -135,6 +137,9 @@ class StateLogger(LifecycleNode):
         self.get_logger().info("Deactivating StateLogger: flushing and closing file...")
         self._is_active = False
         self._close_file()
+        # Clear data buffers so stale pre-reset data does not bleed into next trajectory
+        self.latest_odom = None
+        self.latest_cmd_vel = None
         return super().on_deactivate(state)
 
     def _release_resources(self):
@@ -173,15 +178,16 @@ class StateLogger(LifecycleNode):
         return super().on_shutdown(state)
 
     def _close_file(self):
-        if self.file is not None and not self.file.closed:
-            try:
-                self.file.flush()
-                self.file.close()
-                self.get_logger().info(f"Closed output file {self.output_file}")
-            except Exception as e:
-                self.get_logger().warn(f"Error closing file {self.output_file}: {e}")
-            finally:
-                self.file = None
+        with self._file_lock:
+            if self.file is not None and not self.file.closed:
+                try:
+                    self.file.flush()
+                    self.file.close()
+                    self.get_logger().info(f"Closed output file {self.output_file}")
+                except Exception as e:
+                    self.get_logger().warn(f"Error closing file {self.output_file}: {e}")
+                finally:
+                    self.file = None
 
     def odom_cb(self, msg: Odometry):
         self.latest_odom = msg
@@ -200,7 +206,7 @@ class StateLogger(LifecycleNode):
     def scan_cb(self, msg: LaserScan):
         # Drive logging from scan callback to avoid duplicate entries
         # Only log data when in Active lifecycle state
-        if not self._is_active or self.file is None or self.file.closed or self.latest_odom is None:
+        if not self._is_active or self.latest_odom is None:
             return
 
         # Time
@@ -254,7 +260,7 @@ class StateLogger(LifecycleNode):
 
         # JSON compliant ranges
         safe_ranges = [
-            r if not math.isinf(r) and not math.isnan(r) else None 
+            r if not math.isinf(r) and not math.isnan(r) else None
             for r in msg.ranges
         ]
 
@@ -272,14 +278,20 @@ class StateLogger(LifecycleNode):
             "scan": safe_ranges
         }
 
-        # Write to JSONL
-        self.file.write(json.dumps(data) + '\n')
-        self.file.flush()
+        # Write to JSONL under lock to prevent race with _close_file
+        with self._file_lock:
+            if self.file is not None and not self.file.closed:
+                self.file.write(json.dumps(data) + '\n')
+                self.file.flush()
 
     def destroy_node(self):
         self._is_active = False
         self._close_file()
         super().destroy_node()
+
+
+# Descriptive name used by the in-process sweep orchestrator.
+StateLoggerLifecycleNode = StateLogger
 
 
 def main(args=None):

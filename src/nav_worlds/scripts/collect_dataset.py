@@ -19,6 +19,7 @@ from datetime import datetime
 # Allow importing peer scripts
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from generate_waypoints import generate_waypoints, resolve_default_map
+from run_sweep import WarmRestartRunner, ColdRestartRunner
 
 
 def resolve_world_map(world_name: str, explicit_map: str = '') -> str:
@@ -49,8 +50,14 @@ def resolve_world_map(world_name: str, explicit_map: str = '') -> str:
     return ''
 
 
-def prompt_user_confirmation(preview_path: str, num_trajectories: int) -> bool:
-    """Launch xdg-open if GUI display exists and prompt for CLI approval."""
+def prompt_user_confirmation(preview_path: str, num_trajectories: int, no_preview: bool = False) -> bool:
+    """Launch xdg-open if GUI display exists and prompt for CLI approval.
+
+    Args:
+        preview_path: Path to the waypoint preview image.
+        num_trajectories: Number of trajectories generated.
+        no_preview: If True, skip launching the graphical viewer entirely.
+    """
     has_display = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY'))
     xdg_bin = shutil.which('xdg-open')
 
@@ -59,7 +66,9 @@ def prompt_user_confirmation(preview_path: str, num_trajectories: int) -> bool:
     print(f"Preview image: {preview_path}")
 
     viewer_proc = None
-    if has_display and xdg_bin:
+    if no_preview:
+        print("Note: --no-preview specified. Skipping graphical preview.")
+    elif has_display and xdg_bin:
         try:
             print("Opening waypoint trajectory preview with xdg-open...")
             viewer_proc = subprocess.Popen(
@@ -78,7 +87,15 @@ def prompt_user_confirmation(preview_path: str, num_trajectories: int) -> bool:
         ans = input("Proceed with simulation sweep using these trajectories? [Y/n]: ").strip().lower()
     except (KeyboardInterrupt, EOFError):
         print("\nAborted by user.")
-        return False
+        ans = 'n'
+
+    # Clean up the viewer process once the user has responded
+    if viewer_proc is not None:
+        try:
+            viewer_proc.terminate()
+            viewer_proc.wait(timeout=2.0)
+        except Exception:
+            pass
 
     return ans in ('', 'y', 'yes')
 
@@ -118,6 +135,8 @@ def main():
     ui_group = parser.add_argument_group("Interactive Confirmation")
     ui_group.add_argument('-y', '--no-prompt', action='store_true',
                           help='Automatically approve generated waypoints without opening xdg-open or prompting')
+    ui_group.add_argument('--no-preview', action='store_true',
+                          help='Skip opening the graphical waypoint preview (xdg-open), even when a display is present')
 
     # Sweep & Bag Configuration Arguments
     sweep_group = parser.add_argument_group("Sweep & Rosbag Configuration")
@@ -217,49 +236,58 @@ def main():
 
         # 3. Interactive Visual Approval
         if not args.no_prompt and os.path.exists(preview_png):
-            proceed = prompt_user_confirmation(preview_png, len(waypoints))
+            proceed = prompt_user_confirmation(
+                preview_png, len(waypoints), no_preview=args.no_preview
+            )
             if not proceed:
                 print("Aborting sweep execution. Generated waypoints preserved.")
                 sys.exit(0)
 
-    # 4. Invoke Sweep Orchestrator (run_sweep.py)
-    run_sweep_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run_sweep.py')
-    sweep_cmd = [
-        sys.executable, run_sweep_script,
-        '--waypoints', waypoints_csv,
-        '--sweep-dir', dest_dir,
-        '--world', args.world,
-        '--bag-profile', args.bag_profile,
-        '--storage-id', args.storage_id
-    ]
+    # 4. Invoke Sweep Orchestrator in-process
+    import argparse as _argparse
+    sweep_args = _argparse.Namespace(
+        waypoints=waypoints_csv,
+        sweep_dir=dest_dir,
+        world=args.world,
+        bag_profile=args.bag_profile,
+        storage_id=args.storage_id,
+        cold_restart=args.cold_restart,
+        warm_reset=not args.cold_restart,
+        gui=args.gui,
+        rviz=args.rviz,
+        add_topics=args.add_topics,
+        custom_topics=args.custom_topics,
+        verbose=args.verbose,
+        overwrite=args.overwrite,
+        max_runs=None,
+        output_dir=dest_dir,
+        include_camera=False,
+        disable_lidar2d=False,
+        model_name='a200_0000/robot',
+    )
 
-    if args.cold_restart:
-        sweep_cmd.append('--cold-restart')
-    if args.gui:
-        sweep_cmd.append('--gui')
-    if args.rviz:
-        sweep_cmd.append('--rviz')
-    if args.add_topics:
-        sweep_cmd.extend(['--add-topics'] + args.add_topics)
-    if args.custom_topics:
-        sweep_cmd.extend(['--custom-topics'] + args.custom_topics)
-    if args.verbose:
-        sweep_cmd.append('--verbose')
-    if args.overwrite:
-        sweep_cmd.append('--overwrite')
+    runner_cls = ColdRestartRunner if args.cold_restart else WarmRestartRunner
+    runner = runner_cls(sweep_args)
 
     print("\n" + "=" * 60)
-    print("Launching simulation sweep...")
-    print(f"Command: {' '.join(sweep_cmd)}")
+    print(f"Launching simulation sweep (in-process, runner={runner_cls.__name__})...")
     print("=" * 60 + "\n")
 
-    res = subprocess.run(sweep_cmd)
+    try:
+        returncode = runner.run()
+        if returncode is None:
+            returncode = 0
+    except SystemExit as e:
+        returncode = e.code if isinstance(e.code, int) else 1
+    except Exception as e:
+        print(f"Sweep runner raised an exception: {e}", file=sys.stderr)
+        returncode = 1
 
     # 5. Print Final Summary
     meta_csv = os.path.join(dest_dir, 'sweep_metadata.csv')
     if os.path.exists(meta_csv):
         print("\n" + "=" * 60)
-        print(f"Dataset Collection Completed!")
+        print("Dataset Collection Completed!")
         print(f"Outputs located at: {dest_dir}")
         print("Summary of runs:")
         with open(meta_csv, 'r') as f:
@@ -267,7 +295,7 @@ def main():
                 print(f"  {line.strip()}")
         print("=" * 60)
 
-    sys.exit(res.returncode)
+    sys.exit(returncode)
 
 
 if __name__ == '__main__':

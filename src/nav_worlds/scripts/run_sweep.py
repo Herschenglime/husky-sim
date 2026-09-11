@@ -4,6 +4,7 @@ import sys
 import csv
 import time
 import math
+import signal
 import shutil
 import argparse
 import subprocess
@@ -12,6 +13,7 @@ from datetime import datetime
 
 try:
     import rclpy
+    from rclpy.executors import SingleThreadedExecutor
     from geometry_msgs.msg import (
         PoseStamped,
         PoseWithCovarianceStamped,
@@ -23,9 +25,15 @@ try:
     from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
     from std_srvs.srv import Empty
 
+    from launch import LaunchService, LaunchDescription
+    from launch.actions import IncludeLaunchDescription
+    from launch.launch_description_sources import PythonLaunchDescriptionSource
+    from launch.substitutions import TextSubstitution
+
     sys.path.insert(0, os.path.dirname(__file__))
     from send_goal import publish_goal_marker
     from bag_recorder import RosbagRecorder
+    from log_state import StateLogger
 except ImportError:
     rclpy = None
 
@@ -87,6 +95,32 @@ def resolve_bag_topics(args, ns):
                 topics.append(topic)
 
     return topics
+
+
+def build_launch_description(launch_args: dict) -> 'LaunchDescription':
+    """Return a LaunchDescription that includes a200_point_nav.launch.py.
+
+    Args:
+        launch_args: Mapping of launch argument name → string value, e.g.
+            {'world': 'warehouse', 'headless': 'true', 'x': '1.0', ...}
+
+    Returns a ``LaunchDescription`` ready for use with ``LaunchService``.
+    The function resolves the launch file path at call time via
+    ``ament_index_python`` so it works both from a sourced overlay and
+    from an installed workspace.
+    """
+    from ament_index_python.packages import get_package_share_directory
+    pkg_share = get_package_share_directory('nav_worlds')
+    launch_file = os.path.join(pkg_share, 'launch', 'a200_point_nav.launch.py')
+
+    launch_arguments = [(k, TextSubstitution(text=str(v))) for k, v in launch_args.items()]
+
+    return LaunchDescription([
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(launch_file),
+            launch_arguments=launch_arguments,
+        )
+    ])
 
 
 class SimulationRunner:
@@ -164,37 +198,15 @@ class SimulationRunner:
             sys.exit(130)
 
     def cleanup_orphans(self):
-        # Clean up Gazebo and specific scripts
-        subprocess.run(['pkill', '-9', '-f', 'gz sim'], capture_output=True)
-        subprocess.run(['pkill', '-9', '-f', 'log_state.py'], capture_output=True)
-        
-        # Clean up ROS 2 nodes, but never kill ourselves or any of our ancestors (e.g. wrapper shell)
-        my_pid = os.getpid()
-        protected_pids = {my_pid}
-        
-        try:
-            curr = my_pid
-            while curr > 1:
-                out = subprocess.check_output(['ps', '-o', 'ppid=', '-p', str(curr)]).decode().strip()
-                if not out:
-                    break
-                curr = int(out)
-                protected_pids.add(curr)
-        except Exception:
-            pass
+        """Legacy safety-net for emergency cleanup.
 
-        try:
-            out = subprocess.check_output(['pgrep', '-f', 'ros2']).decode().split()
-            for p in out:
-                pid = int(p)
-                if pid not in protected_pids:
-                    try:
-                        os.kill(pid, 9)
-                    except ProcessLookupError:
-                        pass
-        except (subprocess.CalledProcessError, ValueError):
-            pass
-        time.sleep(1.0)
+        The preferred teardown path is sending SIGINT to self.launch_proc so the
+        ROS 2 launch system unwinds Gazebo and child nodes gracefully.  This method
+        is retained as a last-resort guard for interrupted cold-restart sweeps and
+        is intentionally lightweight – it no longer issues blanket pkill/pgrep calls
+        that could kill unrelated ROS 2 processes on the host.
+        """
+        pass
 
     def run_trajectory(self, run_id, wp):
         raise NotImplementedError()
@@ -204,6 +216,7 @@ class ColdRestartRunner(SimulationRunner):
     def run_trajectory(self, run_id, wp):
         # 1. Pre-flight cleanup
         self.cleanup_orphans()
+        status = 'failed'
         
         run_dir = os.path.join(self.sweep_dir, run_id)
         os.makedirs(run_dir, exist_ok=True)
@@ -212,14 +225,33 @@ class ColdRestartRunner(SimulationRunner):
         # 2. Start Background Processes
         # log_state.py
         state_file = os.path.join(run_dir, 'state.jsonl')
-        logger_proc = subprocess.Popen([
-            'ros2', 'run', 'nav_worlds', 'log_state.py',
-            '--odom_topic', f'/{self.ns}/platform/odom/filtered',
-            '--cmd_vel_topic', f'/{self.ns}/cmd_vel',
-            '--scan_topic', f'/{self.ns}/sensors/lidar2d_0/scan_filtered',
-            '--target_frame', 'map',
-            '--output', state_file
-        ])
+
+        # Start in-process state logger on a background executor
+        if rclpy is not None:
+            if not rclpy.ok():
+                rclpy.init()
+            from rclpy.parameter import Parameter
+            logger_node = StateLogger(
+                node_name='state_logger_cold',
+                odom_topic=f'/{self.ns}/platform/odom/filtered',
+                cmd_vel_topic=f'/{self.ns}/cmd_vel',
+                scan_topic=f'/{self.ns}/sensors/lidar2d_0/scan_filtered',
+                target_frame='map',
+                output_file=state_file,
+            )
+            logger_node.set_parameters([Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+            logger_executor = SingleThreadedExecutor()
+            logger_executor.add_node(logger_node)
+            logger_node.trigger_configure()
+            logger_node.trigger_activate()
+            logger_thread = threading.Thread(
+                target=logger_executor.spin, daemon=True
+            )
+            logger_thread.start()
+        else:
+            logger_node = None
+            logger_executor = None
+            logger_thread = None
 
         try:
             with RosbagRecorder(
@@ -267,13 +299,26 @@ class ColdRestartRunner(SimulationRunner):
                     print(f"Launch command failed: {e}")
                     status = 'failed'
         finally:
-            # 4. Teardown
-            logger_proc.terminate()
-            try:
-                logger_proc.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                logger_proc.kill()
-            
+            # 4. Teardown in-process state logger
+            # Order: deactivate → executor shutdown → thread join → destroy_node
+            if logger_node is not None:
+                try:
+                    logger_node.trigger_deactivate()
+                except Exception:
+                    pass
+            if logger_executor is not None:
+                try:
+                    logger_executor.shutdown(timeout_sec=2.0)
+                except Exception:
+                    pass
+            if logger_thread is not None and logger_thread.is_alive():
+                logger_thread.join(timeout=2.0)
+            if logger_node is not None:
+                try:
+                    logger_node.destroy_node()
+                except Exception:
+                    pass
+
         return status
 
 
@@ -281,10 +326,17 @@ class WarmRestartRunner(SimulationRunner):
     def __init__(self, args):
         super().__init__(args)
         self.launch_proc = None
+        self.stream_thread = None
+        self.launch_service = None
+        self.launch_service_thread = None
         self.node = None
         self.navigator = None
         self.pub_cmd = None
         self.pub_init = None
+        self.state_logger = None
+        self.logger_executor = None
+        self.logger_thread = None
+        self._interrupted = False
 
     def init_ros(self, clock_timeout: float = 5.0, use_sim_time: bool = True):
         if rclpy is None:
@@ -310,6 +362,23 @@ class WarmRestartRunner(SimulationRunner):
         except ImportError:
             self.set_pose_client = None
 
+        # Instantiate in-process state logger on a dedicated background executor
+        self.state_logger = StateLogger(
+            node_name='state_logger_warm',
+            odom_topic=f'/{self.ns}/platform/odom/filtered',
+            cmd_vel_topic=f'/{self.ns}/cmd_vel',
+            scan_topic=f'/{self.ns}/sensors/lidar2d_0/scan_filtered',
+            target_frame='map',
+            output_file='state.jsonl',   # placeholder; overridden per trajectory
+        )
+        self.state_logger.set_parameters([Parameter('use_sim_time', Parameter.Type.BOOL, use_sim_time)])
+        self.logger_executor = SingleThreadedExecutor()
+        self.logger_executor.add_node(self.state_logger)
+        self.logger_thread = threading.Thread(
+            target=self.logger_executor.spin, daemon=True
+        )
+        self.logger_thread.start()
+
         if use_sim_time and clock_timeout > 0.0:
             start_clock_wait = time.time()
             while self.node.get_clock().now().nanoseconds == 0:
@@ -319,6 +388,7 @@ class WarmRestartRunner(SimulationRunner):
                 if self.launch_proc and self.launch_proc.poll() is not None:
                     raise RuntimeError("Simulation launch exited prematurely!")
                 rclpy.spin_once(self.node, timeout_sec=0.1)
+
 
     def teleport_gazebo(self, x, y, z, yaw_rad):
         qz = math.sin(yaw_rad / 2.0)
@@ -530,7 +600,8 @@ class WarmRestartRunner(SimulationRunner):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
+            start_new_session=True,  # own process group so SIGINT reaches all children
         )
 
         def stream_output():
@@ -566,20 +637,78 @@ class WarmRestartRunner(SimulationRunner):
 
         except KeyboardInterrupt:
             print("\nSweep interrupted by user. Cleaning up...")
+            self._interrupted = True
         finally:
+            # 1. Teardown in-process state logger
+            # Order: deactivate → executor shutdown → thread join → destroy_node
+            if self.state_logger is not None:
+                try:
+                    if self.state_logger.current_state == 'active':
+                        self.state_logger.trigger_deactivate()
+                except Exception:
+                    pass
+            if self.logger_executor is not None:
+                try:
+                    self.logger_executor.shutdown(timeout_sec=2.0)
+                except Exception:
+                    pass
+            if self.logger_thread is not None and self.logger_thread.is_alive():
+                self.logger_thread.join(timeout=2.0)
+            if self.state_logger is not None:
+                try:
+                    self.state_logger.destroy_node()
+                except Exception:
+                    pass
+
+            # 2. Graceful Nav2 lifecycle shutdown (with deadlock guard)
+            if self.navigator is not None:
+                try:
+                    mgr_svc = f'/{self.ns}/lifecycle_manager_navigation/manage_nodes'
+                    from lifecycle_msgs.srv import GetState as _GetState
+                    _tmp = self.navigator.create_client(_GetState, mgr_svc)
+                    nav_mgr_up = _tmp.wait_for_service(timeout_sec=2.0)
+                    self.navigator.destroy_client(_tmp)
+                    if nav_mgr_up:
+                        print("Requesting Nav2 lifecycle shutdown...")
+                        self.navigator.lifecycleShutdown()
+                    else:
+                        print("[WARN] Nav2 lifecycle manager not reachable; skipping lifecycleShutdown.")
+                except Exception as e:
+                    print(f"[WARN] Nav2 lifecycle shutdown raised: {e}")
+
+            # 3. Destroy navigator node and shut down rclpy
             if self.node:
-                self.node.destroy_node()
+                try:
+                    self.node.destroy_node()
+                except Exception:
+                    pass
             if rclpy is not None and rclpy.ok():
                 rclpy.shutdown()
+
+            # 4. Graceful launch process teardown: SIGINT to process group first
             if self.launch_proc:
                 print("Stopping simulation stack...")
-                self.launch_proc.terminate()
                 try:
-                    self.launch_proc.wait(timeout=8.0)
+                    pgid = os.getpgid(self.launch_proc.pid)
+                    os.killpg(pgid, signal.SIGINT)
+                    self.launch_proc.wait(timeout=12.0)
+                except (ProcessLookupError, PermissionError):
+                    pass
                 except subprocess.TimeoutExpired:
-                    self.launch_proc.kill()
+                    try:
+                        self.launch_proc.terminate()
+                        self.launch_proc.wait(timeout=5.0)
+                    except subprocess.TimeoutExpired:
+                        self.launch_proc.kill()
+                except Exception:
+                    self.launch_proc.terminate()
+
+            if getattr(self, 'stream_thread', None) is not None:
+                self.stream_thread.join(timeout=2.0)
+
             launch_log_file.close()
-            self.cleanup_orphans()
+
+        return 130 if self._interrupted else 0
 
     def run_trajectory(self, run_id, wp):
         # 1. Reset Environment
@@ -590,16 +719,21 @@ class WarmRestartRunner(SimulationRunner):
         os.makedirs(run_dir, exist_ok=True)
         bag_dir = os.path.join(run_dir, 'bag')
 
-        # 2. Start Background Loggers
+        # 2. Start In-Process State Logger via lifecycle transitions
         state_file = os.path.join(run_dir, 'state.jsonl')
-        logger_proc = subprocess.Popen([
-            'ros2', 'run', 'nav_worlds', 'log_state.py',
-            '--odom_topic', f'/{self.ns}/platform/odom/filtered',
-            '--cmd_vel_topic', f'/{self.ns}/cmd_vel',
-            '--scan_topic', f'/{self.ns}/sensors/lidar2d_0/scan_filtered',
-            '--target_frame', 'map',
-            '--output', state_file
-        ])
+        if self.state_logger is not None:
+            from rclpy.parameter import Parameter
+            from rclpy.lifecycle import TransitionCallbackReturn
+            # Update output file path (only allowed while Inactive/Unconfigured)
+            if self.state_logger.current_state not in ('active',):
+                self.state_logger.set_parameters(
+                    [Parameter('output', Parameter.Type.STRING, state_file)]
+                )
+            # Ensure node is configured before activating
+            if self.state_logger.current_state == 'unconfigured':
+                self.state_logger.trigger_configure()
+            if self.state_logger.current_state == 'inactive':
+                self.state_logger.trigger_activate()
 
         try:
             with RosbagRecorder(
@@ -611,17 +745,15 @@ class WarmRestartRunner(SimulationRunner):
                 # 3. Execute Goal in-process via BasicNavigator
                 status = self.execute_nav_goal(wp)
         finally:
-            # 4. Teardown Loggers
-            logger_proc.terminate()
-            try:
-                logger_proc.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                logger_proc.kill()
-
-            # Clean up any orphaned log_state
-            subprocess.run(['pkill', '-9', '-f', 'log_state.py'], capture_output=True)
+            # 4. Deactivate state logger (flushes and closes output file)
+            if self.state_logger is not None:
+                try:
+                    self.state_logger.trigger_deactivate()
+                except Exception as e:
+                    print(f"[WARN] StateLogger deactivate failed: {e}")
 
         return status
+
 
     def execute_nav_goal(self, wp, timeout_sim: float = 180.0) -> str:
         goal_x = float(wp['goal_x'])
