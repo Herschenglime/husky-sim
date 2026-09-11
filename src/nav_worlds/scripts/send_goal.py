@@ -50,45 +50,33 @@ def publish_goal_marker(navigator, x, y, frame='map', namespace='a200_0000', wor
 
     # 2. Render Visual Marker in Gazebo Simulation GUI
     if world:
-        pose_ok = False
         try:
-            from ros_gz_interfaces.srv import SetEntityPose
+            from ros_gz_interfaces.srv import SpawnEntity, DeleteEntity
             from ros_gz_interfaces.msg import Entity
 
-            set_pose_client = navigator.create_client(SetEntityPose, f'/world/{world}/set_pose')
-            if set_pose_client.wait_for_service(timeout_sec=0.5):
-                req = SetEntityPose.Request()
-                req.entity.name = 'goal_marker'
-                req.entity.type = Entity.MODEL
-                req.pose.position.x = float(x)
-                req.pose.position.y = float(y)
-                req.pose.position.z = 0.25
-                req.pose.orientation.w = 1.0
-                fut = set_pose_client.call_async(req)
-                rclpy.spin_until_future_complete(navigator, fut, timeout_sec=1.0)
-                if fut.done() and fut.result() is not None and fut.result().success:
-                    pose_ok = True
+            remove_client = navigator.create_client(DeleteEntity, f'/world/{world}/remove')
+            create_client = navigator.create_client(SpawnEntity, f'/world/{world}/create')
+
+            if remove_client.wait_for_service(timeout_sec=0.5):
+                req_del = DeleteEntity.Request()
+                req_del.entity.name = 'goal_marker'
+                req_del.entity.type = Entity.MODEL
+                fut_del = remove_client.call_async(req_del)
+                rclpy.spin_until_future_complete(navigator, fut_del, timeout_sec=0.5)
+
+            if create_client.wait_for_service(timeout_sec=0.5):
+                req_spawn = SpawnEntity.Request()
+                req_spawn.entity_factory.name = 'goal_marker'
+                req_spawn.entity_factory.allow_renaming = False
+                req_spawn.entity_factory.pose.position.x = float(x)
+                req_spawn.entity_factory.pose.position.y = float(y)
+                req_spawn.entity_factory.pose.position.z = 0.1
+                req_spawn.entity_factory.pose.orientation.w = 1.0
+                req_spawn.entity_factory.sdf = """<sdf version="1.7"><model name="goal_marker"><static>true</static><link name="link"><visual name="visual"><geometry><sphere><radius>0.2</radius></sphere></geometry><material><ambient>0 1 0 1</ambient><diffuse>0 1 0 1</diffuse></material></visual></link></model></sdf>"""
+                fut_spawn = create_client.call_async(req_spawn)
+                rclpy.spin_until_future_complete(navigator, fut_spawn, timeout_sec=1.0)
         except Exception:
             pass
-
-        # If goal_marker was not pre-defined in the world, spawn it dynamically
-        if not pose_ok:
-            try:
-                from ros_gz_interfaces.srv import SpawnEntity
-                spawn_client = navigator.create_client(SpawnEntity, f'/world/{world}/create')
-                if spawn_client.wait_for_service(timeout_sec=0.5):
-                    req_spawn = SpawnEntity.Request()
-                    req_spawn.entity_factory.name = 'goal_marker'
-                    req_spawn.entity_factory.allow_renaming = False
-                    req_spawn.entity_factory.pose.position.x = float(x)
-                    req_spawn.entity_factory.pose.position.y = float(y)
-                    req_spawn.entity_factory.pose.position.z = 0.25
-                    req_spawn.entity_factory.pose.orientation.w = 1.0
-                    req_spawn.entity_factory.sdf = """<sdf version="1.7"><model name="goal_marker"><static>true</static><link name="link"><visual name="visual"><geometry><sphere><radius>0.25</radius></sphere></geometry><material><ambient>0 1 0 1</ambient><diffuse>0 1 0 1</diffuse></material></visual></link></model></sdf>"""
-                    fut = spawn_client.call_async(req_spawn)
-                    rclpy.spin_until_future_complete(navigator, fut, timeout_sec=1.0)
-            except Exception:
-                pass
 
 
 def report_distance(feedback):
