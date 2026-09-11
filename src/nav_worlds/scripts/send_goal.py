@@ -13,32 +13,38 @@ import time
 import subprocess
 
 import rclpy
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from geometry_msgs.msg import PoseStamped
+from visualization_msgs.msg import Marker
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 
 
-def spawn_marker(world, x, y):
-    if not world:
-        return
-
-    # Remove old marker if it exists
-    subprocess.run([
-        'gz', 'service', '-s', f'/world/{world}/remove',
-        '--reqtype', 'gz.msgs.Entity',
-        '--reptype', 'gz.msgs.Boolean',
-        '--timeout', '1000',
-        '--req', 'name: "goal_marker", type: MODEL'
-    ], capture_output=True)
-
-    # Spawn new marker
-    sdf = f"""<sdf version="1.7"><model name="goal_marker"><static>true</static><pose>{x} {y} 0.1 0 0 0</pose><link name="link"><visual name="visual"><geometry><sphere><radius>0.2</radius></sphere></geometry><material><ambient>0 1 0 1</ambient><diffuse>0 1 0 1</diffuse></material></visual></link></model></sdf>"""
-    subprocess.run([
-        'gz', 'service', '-s', f'/world/{world}/create',
-        '--reqtype', 'gz.msgs.EntityFactory',
-        '--reptype', 'gz.msgs.Boolean',
-        '--timeout', '1000',
-        '--req', f"sdf: '{sdf}'"
-    ], capture_output=True)
+def publish_goal_marker(navigator, x, y, frame='map'):
+    marker_qos = QoSProfile(
+        depth=1,
+        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        reliability=QoSReliabilityPolicy.RELIABLE
+    )
+    marker_pub = navigator.create_publisher(Marker, 'goal_marker', marker_qos)
+    marker = Marker()
+    marker.header.frame_id = frame
+    marker.header.stamp = navigator.get_clock().now().to_msg()
+    marker.ns = 'goal'
+    marker.id = 0
+    marker.type = Marker.SPHERE
+    marker.action = Marker.ADD
+    marker.pose.position.x = float(x)
+    marker.pose.position.y = float(y)
+    marker.pose.position.z = 0.1
+    marker.pose.orientation.w = 1.0
+    marker.scale.x = 0.4
+    marker.scale.y = 0.4
+    marker.scale.z = 0.4
+    marker.color.r = 0.0
+    marker.color.g = 1.0
+    marker.color.b = 0.0
+    marker.color.a = 0.9
+    marker_pub.publish(marker)
 
 
 def report_distance(feedback):
@@ -86,7 +92,7 @@ def main():
         except Exception as e:
             navigator.get_logger().warn(f'Wait for {server_name} returned: {e}')
 
-    spawn_marker(args.world, args.x, args.y)
+    publish_goal_marker(navigator, args.x, args.y, frame=args.frame)
 
     goal_pose = PoseStamped()
     goal_pose.header.frame_id = args.frame

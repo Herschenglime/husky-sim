@@ -53,7 +53,7 @@ for axis in ('x', 'y', 'yaw'):
 ARGUMENTS.append(DeclareLaunchArgument('z', default_value='0.3'))
 
 
-def build_gz_actions(world_sdf, headless):
+def build_gz_actions(world_sdf, headless, world='warehouse'):
     """Run Gazebo (headless or GUI) avoiding clearpath_gz's gz_sim.launch.py.
     
     This lets us override the gui.config for top-down views, or add headless flags.
@@ -84,7 +84,10 @@ def build_gz_actions(world_sdf, headless):
 
     clock_bridge = Node(
         package='ros_gz_bridge', executable='parameter_bridge', name='clock_bridge',
-        output='screen', arguments=['/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'])
+        output='screen', arguments=[
+            '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
+            f'/world/{world}/set_pose@ros_gz_interfaces/srv/SetEntityPose@gz.msgs.Pose@gz.msgs.Boolean',
+        ])
 
     return [resource_path, gz_sim, clock_bridge]
 
@@ -98,7 +101,7 @@ def launch_setup(context, *args, **kwargs):
     # gz_sim appends '.sdf', so hand it the path without the extension.
     gz_world = world_file[:-4] if world_file.endswith('.sdf') else (world_file or world)
 
-    actions = build_gz_actions(f'{gz_world}.sdf', headless)
+    actions = build_gz_actions(f'{gz_world}.sdf', headless, world)
 
     robot_spawn = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(pkg_gz, 'launch', 'robot_spawn.launch.py')),

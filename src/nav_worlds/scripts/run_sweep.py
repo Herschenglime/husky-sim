@@ -296,6 +296,11 @@ class WarmRestartRunner(SimulationRunner):
         )
         self.pub_cmd = self.node.create_publisher(TwistStamped, f'/{self.ns}/cmd_vel', 10)
         self.pub_init = self.node.create_publisher(PoseWithCovarianceStamped, f'/{self.ns}/initialpose', 10)
+        try:
+            from ros_gz_interfaces.srv import SetEntityPose
+            self.set_pose_client = self.node.create_client(SetEntityPose, f'/world/{self.args.world}/set_pose')
+        except ImportError:
+            self.set_pose_client = None
 
         # Wait for the first /clock message to arrive
         while self.node.get_clock().now().nanoseconds == 0:
@@ -304,8 +309,32 @@ class WarmRestartRunner(SimulationRunner):
     def teleport_gazebo(self, x, y, z, yaw_rad):
         qz = math.sin(yaw_rad / 2.0)
         qw = math.cos(yaw_rad / 2.0)
+        model_name = getattr(self.args, 'model_name', None) or f"{self.ns}/robot"
+
+        # 1. Try native ROS 2 service bridge
+        if hasattr(self, 'set_pose_client') and self.set_pose_client is not None:
+            try:
+                from ros_gz_interfaces.srv import SetEntityPose
+                from ros_gz_interfaces.msg import Entity
+                if self.set_pose_client.wait_for_service(timeout_sec=0.5):
+                    req = SetEntityPose.Request()
+                    req.entity.name = model_name
+                    req.entity.type = Entity.MODEL
+                    req.pose.position.x = float(x)
+                    req.pose.position.y = float(y)
+                    req.pose.position.z = float(z)
+                    req.pose.orientation.z = qz
+                    req.pose.orientation.w = qw
+                    future = self.set_pose_client.call_async(req)
+                    rclpy.spin_until_future_complete(self.node, future, timeout_sec=2.0)
+                    if future.done() and future.result() is not None and future.result().success:
+                        return True
+            except Exception as e:
+                print(f"[DEBUG] ROS 2 SetEntityPose service call failed: {e}. Falling back to gz CLI...")
+
+        # 2. Fallback to gz CLI
         gz_bin = shutil.which('gz') or '/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz'
-        candidate_names = [f"{self.ns}/robot", self.ns, "robot"]
+        candidate_names = [model_name, f"{self.ns}/robot", self.ns, "robot"]
         for name in candidate_names:
             req = f'name: "{name}", position: {{x: {x}, y: {y}, z: {z}}}, orientation: {{x: 0.0, y: 0.0, z: {qz:.6f}, w: {qw:.6f}}}'
             res = subprocess.run([
@@ -576,6 +605,7 @@ def main():
     parser.add_argument('--cold-restart', action='store_true', help='Use cold restart (relaunch simulation for each trajectory instead of warm reset)')
     parser.add_argument('--warm-reset', action='store_true', default=True, help='Use warm reset (default: keeps simulation running between trajectories)')
     parser.add_argument('-v', '--verbose', action='store_true', help='Stream simulation launch output directly to the terminal in real time')
+    parser.add_argument('--model-name', type=str, default='a200_0000/robot', help='Gazebo model name for robot teleportation')
     parser.add_argument('--overwrite', action='store_true', help='Allow overwriting existing sweep directory, clearing old bags and run data')
     
     args = parser.parse_args()
