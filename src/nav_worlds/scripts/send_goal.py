@@ -27,7 +27,10 @@ def publish_goal_marker(navigator, x, y, frame='map', namespace='a200_0000', wor
         reliability=QoSReliabilityPolicy.RELIABLE
     )
     topic = f'/{namespace}/goal_marker' if namespace else '/goal_marker'
-    marker_pub = navigator.create_publisher(Marker, topic, marker_qos)
+    if not hasattr(navigator, '_goal_marker_pub') or navigator._goal_marker_pub is None:
+        navigator._goal_marker_pub = navigator.create_publisher(Marker, topic, marker_qos)
+    marker_pub = navigator._goal_marker_pub
+
     marker = Marker()
     marker.header.frame_id = frame
     marker.header.stamp = navigator.get_clock().now().to_msg()
@@ -54,8 +57,13 @@ def publish_goal_marker(navigator, x, y, frame='map', namespace='a200_0000', wor
             from ros_gz_interfaces.srv import SpawnEntity, DeleteEntity
             from ros_gz_interfaces.msg import Entity
 
-            remove_client = navigator.create_client(DeleteEntity, f'/world/{world}/remove')
-            create_client = navigator.create_client(SpawnEntity, f'/world/{world}/create')
+            if not hasattr(navigator, '_remove_marker_client') or navigator._remove_marker_client is None:
+                navigator._remove_marker_client = navigator.create_client(DeleteEntity, f'/world/{world}/remove')
+            remove_client = navigator._remove_marker_client
+
+            if not hasattr(navigator, '_create_marker_client') or navigator._create_marker_client is None:
+                navigator._create_marker_client = navigator.create_client(SpawnEntity, f'/world/{world}/create')
+            create_client = navigator._create_marker_client
 
             if remove_client.wait_for_service(timeout_sec=0.5):
                 req_del = DeleteEntity.Request()

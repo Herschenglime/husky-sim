@@ -12,8 +12,18 @@ from datetime import datetime
 
 try:
     import rclpy
-    from geometry_msgs.msg import PoseWithCovarianceStamped, Twist, TwistStamped
+    from geometry_msgs.msg import (
+        PoseStamped,
+        PoseWithCovarianceStamped,
+        Twist,
+        TwistStamped,
+    )
+    from lifecycle_msgs.srv import GetState
     from nav2_msgs.srv import ClearEntireCostmap
+    from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+
+    sys.path.insert(0, os.path.dirname(__file__))
+    from send_goal import publish_goal_marker
 except ImportError:
     rclpy = None
 
@@ -280,20 +290,24 @@ class WarmRestartRunner(SimulationRunner):
         super().__init__(args)
         self.launch_proc = None
         self.node = None
+        self.navigator = None
         self.pub_cmd = None
         self.pub_init = None
 
-    def init_ros(self):
+    def init_ros(self, clock_timeout: float = 5.0, use_sim_time: bool = True):
         if rclpy is None:
-            raise RuntimeError("ROS 2 Python packages (rclpy, geometry_msgs, nav2_msgs) not found. Did you source setup.bash?")
+            raise RuntimeError(
+                "ROS 2 Python packages (rclpy, geometry_msgs, nav2_msgs, nav2_simple_commander) "
+                "not found. Did you source setup.bash?"
+            )
         if not rclpy.ok():
             rclpy.init()
-            
+
         from rclpy.parameter import Parameter
-        self.node = rclpy.create_node(
-            'warm_reset_helper',
-            parameter_overrides=[Parameter('use_sim_time', Parameter.Type.BOOL, True)]
-        )
+        self.navigator = BasicNavigator(node_name='sweep_navigator', namespace=self.ns)
+        self.navigator.set_parameters([Parameter('use_sim_time', Parameter.Type.BOOL, use_sim_time)])
+        self.node = self.navigator
+
         self.pub_cmd = self.node.create_publisher(TwistStamped, f'/{self.ns}/cmd_vel', 10)
         self.pub_init = self.node.create_publisher(PoseWithCovarianceStamped, f'/{self.ns}/initialpose', 10)
         try:
@@ -302,9 +316,15 @@ class WarmRestartRunner(SimulationRunner):
         except ImportError:
             self.set_pose_client = None
 
-        # Wait for the first /clock message to arrive
-        while self.node.get_clock().now().nanoseconds == 0:
-            rclpy.spin_once(self.node, timeout_sec=0.1)
+        if use_sim_time and clock_timeout > 0.0:
+            start_clock_wait = time.time()
+            while self.node.get_clock().now().nanoseconds == 0:
+                if time.time() - start_clock_wait > clock_timeout:
+                    print(f"[DEBUG] Simulation /clock did not become active within {clock_timeout:.1f}s. Proceeding...")
+                    break
+                if self.launch_proc and self.launch_proc.poll() is not None:
+                    raise RuntimeError("Simulation launch exited prematurely!")
+                rclpy.spin_once(self.node, timeout_sec=0.1)
 
     def teleport_gazebo(self, x, y, z, yaw_rad):
         qz = math.sin(yaw_rad / 2.0)
@@ -395,17 +415,69 @@ class WarmRestartRunner(SimulationRunner):
         except Exception as e:
             print(f"[DEBUG] EKF set_pose skipped or failed: {e}")
 
-        # 4. Clear costmaps
-        for srv_name in [f'/{self.ns}/local_costmap/clear_entirely_local_costmap',
-                         f'/{self.ns}/global_costmap/clear_entirely_global_costmap']:
-            client = self.node.create_client(ClearEntireCostmap, srv_name)
+        # 4. Clear costmaps and verify completion
+        for client, name in [
+            (self.navigator.clear_costmap_local_srv, 'local costmap'),
+            (self.navigator.clear_costmap_global_srv, 'global costmap')
+        ]:
             if client.wait_for_service(timeout_sec=2.0):
                 req = ClearEntireCostmap.Request()
                 future = client.call_async(req)
                 rclpy.spin_until_future_complete(self.node, future, timeout_sec=2.0)
+                if future.done() and future.result() is not None:
+                    print(f"Successfully cleared {name}.")
+                else:
+                    print(f"[WARN] Failed to clear {name}.")
+            else:
+                print(f"[WARN] {name} clear service unavailable.")
 
-        # Settle
-        time.sleep(1.5)
+        # Brief spin to process pending callbacks / transforms
+        rclpy.spin_once(self.node, timeout_sec=0.2)
+
+    def wait_for_nav2_ready(self, timeout_sec=180.0):
+        print(f"Waiting for Nav2 to become active in namespace /{self.ns}...")
+        start_wait = time.time()
+        nodes_to_check = ['bt_navigator', 'planner_server', 'controller_server']
+
+        for node_name in nodes_to_check:
+            node_service = f'{node_name}/get_state'
+            state_client = self.navigator.create_client(GetState, node_service)
+
+            while time.time() - start_wait < timeout_sec:
+                if self.launch_proc and self.launch_proc.poll() is not None:
+                    raise RuntimeError(
+                        f"Simulation launch exited prematurely (code {self.launch_proc.returncode})!"
+                    )
+                if state_client.wait_for_service(timeout_sec=1.0):
+                    break
+            else:
+                self.navigator.destroy_client(state_client)
+                raise TimeoutError(f"Service {node_service} unavailable within {timeout_sec}s")
+
+            req = GetState.Request()
+            state = 'unknown'
+            while state != 'active':
+                if time.time() - start_wait > timeout_sec:
+                    self.navigator.destroy_client(state_client)
+                    raise TimeoutError(
+                        f"Node {node_name} failed to reach active state within {timeout_sec}s"
+                    )
+                if self.launch_proc and self.launch_proc.poll() is not None:
+                    self.navigator.destroy_client(state_client)
+                    raise RuntimeError(
+                        f"Simulation launch exited prematurely (code {self.launch_proc.returncode})!"
+                    )
+                future = state_client.call_async(req)
+                rclpy.spin_until_future_complete(self.navigator, future, timeout_sec=1.0)
+                if future.done() and future.result() is not None:
+                    state = future.result().current_state.label
+                time.sleep(0.5)
+
+            self.navigator.destroy_client(state_client)
+            print(f"  Nav2 component '{node_name}' is active.")
+
+        print("Simulation stack and Nav2 are READY for use!")
+        return True
 
     def run(self):
         waypoints = []
@@ -463,26 +535,8 @@ class WarmRestartRunner(SimulationRunner):
         self.stream_thread.start()
 
         try:
-            # Wait for Nav2 bringup to be READY
-            print("Waiting for simulation & Nav2 to become READY...")
-            start_wait = time.time()
-            ready = False
-            while time.time() - start_wait < 180.0:
-                if self.launch_proc.poll() is not None:
-                    raise RuntimeError("Simulation launch exited prematurely!")
-                if os.path.exists(launch_log_path):
-                    with open(launch_log_path, 'r', errors='ignore') as f:
-                        if '[a200_point_nav] READY' in f.read():
-                            ready = True
-                            break
-                time.sleep(1.0)
-
-            if not ready:
-                raise TimeoutError("Timed out waiting for simulation stack to be READY.")
-
-            print("Simulation stack is READY!")
-            time.sleep(2.0)
             self.init_ros()
+            self.wait_for_nav2_ready(timeout_sec=180.0)
 
             # 3. Trajectory Loop
             for i, wp in enumerate(waypoints):
@@ -545,32 +599,8 @@ class WarmRestartRunner(SimulationRunner):
         if bag_proc.poll() is not None:
             raise RuntimeError(f"rosbag recording failed to start for {run_id} (exit code {bag_proc.returncode})")
 
-        # 3. Execute Goal via send_goal.py
-        if 'goal_yaw_deg' in wp:
-            goal_yaw = wp['goal_yaw_deg']
-        elif 'goal_yaw_rad' in wp:
-            goal_yaw = str(math.degrees(float(wp['goal_yaw_rad'])))
-        else:
-            goal_yaw = '0.0'
-
-        goal_cmd = [
-            'ros2', 'run', 'nav_worlds', 'send_goal.py',
-            str(wp['goal_x']), str(wp['goal_y']), str(goal_yaw),
-            '--ns', self.ns,
-            '--world', self.args.world,
-            '--use-sim-time',
-            '--timeout', '180'
-        ]
-        print(f"Executing goal: {' '.join(goal_cmd)}")
-        try:
-            res = subprocess.run(goal_cmd, timeout=240)
-            status = 'completed' if res.returncode == 0 else 'failed'
-        except subprocess.TimeoutExpired:
-            print("Goal execution timed out!")
-            status = 'timeout'
-        except Exception as e:
-            print(f"Goal execution failed: {e}")
-            status = 'failed'
+        # 3. Execute Goal in-process via BasicNavigator
+        status = self.execute_nav_goal(wp)
 
         # 4. Teardown Loggers
         logger_proc.terminate()
@@ -587,6 +617,82 @@ class WarmRestartRunner(SimulationRunner):
 
         # Clean up any orphaned log_state
         subprocess.run(['pkill', '-9', '-f', 'log_state.py'], capture_output=True)
+
+        return status
+
+    def execute_nav_goal(self, wp, timeout_sim: float = 180.0) -> str:
+        goal_x = float(wp['goal_x'])
+        goal_y = float(wp['goal_y'])
+        if 'goal_yaw_rad' in wp:
+            goal_yaw_rad = float(wp['goal_yaw_rad'])
+        elif 'goal_yaw_deg' in wp:
+            goal_yaw_rad = math.radians(float(wp['goal_yaw_deg']))
+        else:
+            goal_yaw_rad = 0.0
+
+        publish_goal_marker(
+            self.navigator, goal_x, goal_y,
+            frame='map', namespace=self.ns, world=self.args.world
+        )
+
+        goal_pose = PoseStamped()
+        goal_pose.header.frame_id = 'map'
+        goal_pose.header.stamp = self.navigator.get_clock().now().to_msg()
+        goal_pose.pose.position.x = goal_x
+        goal_pose.pose.position.y = goal_y
+        goal_pose.pose.orientation.z = math.sin(goal_yaw_rad / 2.0)
+        goal_pose.pose.orientation.w = math.cos(goal_yaw_rad / 2.0)
+
+        print(
+            f'Executing goal: ({goal_x:.2f}, {goal_y:.2f}, yaw={goal_yaw_rad:.3f} rad)...'
+        )
+        accepted = self.navigator.goToPose(goal_pose)
+        if not accepted:
+            print('Goal rejected by Nav2!')
+            return 'failed'
+
+        clock = self.navigator.get_clock()
+        start_sim = clock.now()
+        start_wall = time.time()
+        timeout_wall = max(timeout_sim * 2.5, timeout_sim + 60.0)
+        last_feedback_time = 0.0
+        status = 'failed'
+
+        while not self.navigator.isTaskComplete():
+            now_wall = time.time()
+            feedback = self.navigator.getFeedback()
+            if feedback and (now_wall - last_feedback_time >= 5.0):
+                last_feedback_time = now_wall
+                print(f'  distance remaining: {feedback.distance_remaining:.2f} m')
+
+            elapsed_sim = (clock.now() - start_sim).nanoseconds * 1e-9
+            elapsed_wall = time.time() - start_wall
+            if (elapsed_sim > timeout_sim and elapsed_sim > 0.0) or (elapsed_wall > timeout_wall):
+                print(
+                    f'Goal timed out after {elapsed_sim:.1f}s sim ({elapsed_wall:.1f}s wall)!'
+                )
+                self.navigator.cancelTask()
+                return 'timeout'
+            time.sleep(0.1)
+
+        result = self.navigator.getResult()
+        elapsed_sim = (clock.now() - start_sim).nanoseconds * 1e-9
+        elapsed_wall = time.time() - start_wall
+        if result == TaskResult.SUCCEEDED:
+            print(
+                f'Goal SUCCEEDED after {elapsed_sim:.1f}s sim ({elapsed_wall:.1f}s wall)'
+            )
+            status = 'completed'
+        elif result == TaskResult.CANCELED:
+            print(
+                f'Goal CANCELED after {elapsed_sim:.1f}s sim ({elapsed_wall:.1f}s wall)'
+            )
+            status = 'canceled'
+        else:
+            print(
+                f'Goal FAILED after {elapsed_sim:.1f}s sim ({elapsed_wall:.1f}s wall)'
+            )
+            status = 'failed'
 
         return status
 
