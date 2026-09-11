@@ -187,6 +187,7 @@ class SimulationRunner:
         raise NotImplementedError()
 
 
+class ColdRestartRunner(SimulationRunner):
     def run_trajectory(self, run_id, wp):
         # 1. Pre-flight cleanup
         self.cleanup_orphans()
@@ -287,9 +288,18 @@ class WarmRestartRunner(SimulationRunner):
             raise RuntimeError("ROS 2 Python packages (rclpy, geometry_msgs, nav2_msgs) not found. Did you source setup.bash?")
         if not rclpy.ok():
             rclpy.init()
-        self.node = rclpy.create_node('warm_reset_helper')
+            
+        from rclpy.parameter import Parameter
+        self.node = rclpy.create_node(
+            'warm_reset_helper',
+            parameter_overrides=[Parameter('use_sim_time', Parameter.Type.BOOL, True)]
+        )
         self.pub_cmd = self.node.create_publisher(TwistStamped, f'/{self.ns}/cmd_vel', 10)
         self.pub_init = self.node.create_publisher(PoseWithCovarianceStamped, f'/{self.ns}/initialpose', 10)
+
+        # Wait for the first /clock message to arrive
+        while self.node.get_clock().now().nanoseconds == 0:
+            rclpy.spin_once(self.node, timeout_sec=0.1)
 
     def teleport_gazebo(self, x, y, z, yaw_rad):
         qz = math.sin(yaw_rad / 2.0)
