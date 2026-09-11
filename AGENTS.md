@@ -17,8 +17,11 @@ Operational constraints and execution rules for autonomous agents working in thi
 ---
 
 ## 3. Teardown & Process Cleanup
-* **Finding:** Terminating Gazebo Harmonic via standard `killall gz-sim-server` fails because the command line is `gz sim server` / `gz sim gui`. Orphaned simulations continue publishing to `/clock` and sensor topics, corrupting sim time and blocking Nav2.
-* **Rule:** Always terminate simulation processes cleanly using `pkill -9 -f "gz sim"` and `pkill -9 -f "ros2"`.
+* **Finding:** Terminating Gazebo Harmonic via standard `killall gz-sim-server` fails because the command line is `gz sim server` / `gz sim gui`. Orphaned simulations continue publishing to `/clock` and sensor topics, corrupting sim time and blocking Nav2. In addition, lingering `parameter_bridge`, `image_bridge`, `static_transform_publisher`, and ROS 2 daemon discovery caches pollute the TF tree and costmap buffers across simulation runs.
+* **Rule:** Always execute a full cold teardown to ground zero using the dedicated cleanup script:
+  ```bash
+  ./cold_restart.sh
+  ```
 * **Runner Self-Termination Caution:** When running teardown from inside an automated runner or agent script launched via `ros2 run`, do NOT run an unfiltered `pkill -9 -f "ros2"`, as it will kill the runner and parent shell. Use PID/PPID filtering (e.g., as implemented in `run_sweep.py:cleanup_orphans`).
 
 ---

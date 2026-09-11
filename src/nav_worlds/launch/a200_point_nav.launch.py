@@ -35,7 +35,7 @@ ARGUMENTS = [
                           description='Gazebo world name (e.g. warehouse, office, depot).'),
     DeclareLaunchArgument('world_file', default_value='',
                           description='Explicit path to a world SDF file. If empty, resolves automatically.'),
-    DeclareLaunchArgument('slam', default_value='true', choices=['true', 'false'],
+    DeclareLaunchArgument('slam', default_value='false', choices=['true', 'false'],
                           description='true: build a map using SLAM. false: localize against a saved map.'),
     DeclareLaunchArgument('map', default_value='',
                           description='Full path to map yaml file when slam:=false.'),

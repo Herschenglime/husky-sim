@@ -50,54 +50,43 @@ def publish_goal_marker(navigator, x, y, frame='map', namespace='a200_0000', wor
 
     # 2. Render Visual Marker in Gazebo Simulation GUI
     if world:
-        spawn_ok = False
+        pose_ok = False
         try:
-            from ros_gz_interfaces.srv import SpawnEntity, DeleteEntity
+            from ros_gz_interfaces.srv import SetEntityPose
             from ros_gz_interfaces.msg import Entity
 
-            remove_client = navigator.create_client(DeleteEntity, f'/world/{world}/remove')
-            create_client = navigator.create_client(SpawnEntity, f'/world/{world}/create')
-
-            if remove_client.wait_for_service(timeout_sec=0.3):
-                req_del = DeleteEntity.Request()
-                req_del.entity.name = 'goal_marker'
-                req_del.entity.type = Entity.MODEL
-                fut = remove_client.call_async(req_del)
-                rclpy.spin_until_future_complete(navigator, fut, timeout_sec=0.5)
-
-            if create_client.wait_for_service(timeout_sec=0.5):
-                req_spawn = SpawnEntity.Request()
-                req_spawn.entity_factory.name = 'goal_marker'
-                req_spawn.entity_factory.allow_renaming = False
-                req_spawn.entity_factory.sdf = f"""<sdf version="1.7"><model name="goal_marker"><static>true</static><pose>{x} {y} 0.1 0 0 0</pose><link name="link"><visual name="visual"><geometry><sphere><radius>0.25</radius></sphere></geometry><material><ambient>0 1 0 1</ambient><diffuse>0 1 0 1</diffuse></material></visual></link></model></sdf>"""
-                fut = create_client.call_async(req_spawn)
+            set_pose_client = navigator.create_client(SetEntityPose, f'/world/{world}/set_pose')
+            if set_pose_client.wait_for_service(timeout_sec=0.5):
+                req = SetEntityPose.Request()
+                req.entity.name = 'goal_marker'
+                req.entity.type = Entity.MODEL
+                req.pose.position.x = float(x)
+                req.pose.position.y = float(y)
+                req.pose.position.z = 0.25
+                req.pose.orientation.w = 1.0
+                fut = set_pose_client.call_async(req)
                 rclpy.spin_until_future_complete(navigator, fut, timeout_sec=1.0)
                 if fut.done() and fut.result() is not None and fut.result().success:
-                    spawn_ok = True
+                    pose_ok = True
         except Exception:
             pass
 
-        # Fallback to gz CLI if service bridge not yet active
-        if not spawn_ok:
-            import subprocess
-            import shutil
-            gz_bin = shutil.which('gz') or '/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz'
+        # If goal_marker was not pre-defined in the world, spawn it dynamically
+        if not pose_ok:
             try:
-                subprocess.run([
-                    gz_bin, 'service', '-s', f'/world/{world}/remove',
-                    '--reqtype', 'gz.msgs.Entity',
-                    '--reptype', 'gz.msgs.Boolean',
-                    '--timeout', '500',
-                    '--req', 'name: "goal_marker", type: MODEL'
-                ], capture_output=True)
-                sdf = f"""<sdf version="1.7"><model name="goal_marker"><static>true</static><pose>{x} {y} 0.1 0 0 0</pose><link name="link"><visual name="visual"><geometry><sphere><radius>0.25</radius></sphere></geometry><material><ambient>0 1 0 1</ambient><diffuse>0 1 0 1</diffuse></material></visual></link></model></sdf>"""
-                subprocess.run([
-                    gz_bin, 'service', '-s', f'/world/{world}/create',
-                    '--reqtype', 'gz.msgs.EntityFactory',
-                    '--reptype', 'gz.msgs.Boolean',
-                    '--timeout', '500',
-                    '--req', f"sdf: '{sdf}'"
-                ], capture_output=True)
+                from ros_gz_interfaces.srv import SpawnEntity
+                spawn_client = navigator.create_client(SpawnEntity, f'/world/{world}/create')
+                if spawn_client.wait_for_service(timeout_sec=0.5):
+                    req_spawn = SpawnEntity.Request()
+                    req_spawn.entity_factory.name = 'goal_marker'
+                    req_spawn.entity_factory.allow_renaming = False
+                    req_spawn.entity_factory.pose.position.x = float(x)
+                    req_spawn.entity_factory.pose.position.y = float(y)
+                    req_spawn.entity_factory.pose.position.z = 0.25
+                    req_spawn.entity_factory.pose.orientation.w = 1.0
+                    req_spawn.entity_factory.sdf = """<sdf version="1.7"><model name="goal_marker"><static>true</static><link name="link"><visual name="visual"><geometry><sphere><radius>0.25</radius></sphere></geometry><material><ambient>0 1 0 1</ambient><diffuse>0 1 0 1</diffuse></material></visual></link></model></sdf>"""
+                    fut = spawn_client.call_async(req_spawn)
+                    rclpy.spin_until_future_complete(navigator, fut, timeout_sec=1.0)
             except Exception:
                 pass
 
