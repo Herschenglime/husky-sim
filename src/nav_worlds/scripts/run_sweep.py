@@ -327,8 +327,11 @@ class WarmRestartRunner(SimulationRunner):
                     req.pose.orientation.w = qw
                     future = self.set_pose_client.call_async(req)
                     rclpy.spin_until_future_complete(self.node, future, timeout_sec=2.0)
-                    if future.done() and future.result() is not None and future.result().success:
-                        return True
+                    if future.done() and future.result() is not None:
+                        if future.result().success:
+                            return True
+                        else:
+                            print(f"[DEBUG] SetEntityPose returned success=False for '{model_name}'. Falling back to gz CLI...")
             except Exception as e:
                 print(f"[DEBUG] ROS 2 SetEntityPose service call failed: {e}. Falling back to gz CLI...")
 

@@ -10,7 +10,6 @@ import argparse
 import math
 import sys
 import time
-import subprocess
 
 import rclpy
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -19,13 +18,16 @@ from visualization_msgs.msg import Marker
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 
 
-def publish_goal_marker(navigator, x, y, frame='map'):
+def publish_goal_marker(navigator, x, y, frame='map', namespace='a200_0000', world=''):
+    """Publish visualization marker for RViz and spawn visual sphere in Gazebo GUI."""
+    # 1. Publish ROS 2 Marker for RViz
     marker_qos = QoSProfile(
         depth=1,
         durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
         reliability=QoSReliabilityPolicy.RELIABLE
     )
-    marker_pub = navigator.create_publisher(Marker, 'goal_marker', marker_qos)
+    topic = f'/{namespace}/goal_marker' if namespace else '/goal_marker'
+    marker_pub = navigator.create_publisher(Marker, topic, marker_qos)
     marker = Marker()
     marker.header.frame_id = frame
     marker.header.stamp = navigator.get_clock().now().to_msg()
@@ -37,14 +39,67 @@ def publish_goal_marker(navigator, x, y, frame='map'):
     marker.pose.position.y = float(y)
     marker.pose.position.z = 0.1
     marker.pose.orientation.w = 1.0
-    marker.scale.x = 0.4
-    marker.scale.y = 0.4
-    marker.scale.z = 0.4
+    marker.scale.x = 0.5
+    marker.scale.y = 0.5
+    marker.scale.z = 0.5
     marker.color.r = 0.0
     marker.color.g = 1.0
     marker.color.b = 0.0
     marker.color.a = 0.9
     marker_pub.publish(marker)
+
+    # 2. Render Visual Marker in Gazebo Simulation GUI
+    if world:
+        spawn_ok = False
+        try:
+            from ros_gz_interfaces.srv import SpawnEntity, DeleteEntity
+            from ros_gz_interfaces.msg import Entity
+
+            remove_client = navigator.create_client(DeleteEntity, f'/world/{world}/remove')
+            create_client = navigator.create_client(SpawnEntity, f'/world/{world}/create')
+
+            if remove_client.wait_for_service(timeout_sec=0.3):
+                req_del = DeleteEntity.Request()
+                req_del.entity.name = 'goal_marker'
+                req_del.entity.type = Entity.MODEL
+                fut = remove_client.call_async(req_del)
+                rclpy.spin_until_future_complete(navigator, fut, timeout_sec=0.5)
+
+            if create_client.wait_for_service(timeout_sec=0.5):
+                req_spawn = SpawnEntity.Request()
+                req_spawn.entity_factory.name = 'goal_marker'
+                req_spawn.entity_factory.allow_renaming = False
+                req_spawn.entity_factory.sdf = f"""<sdf version="1.7"><model name="goal_marker"><static>true</static><pose>{x} {y} 0.1 0 0 0</pose><link name="link"><visual name="visual"><geometry><sphere><radius>0.25</radius></sphere></geometry><material><ambient>0 1 0 1</ambient><diffuse>0 1 0 1</diffuse></material></visual></link></model></sdf>"""
+                fut = create_client.call_async(req_spawn)
+                rclpy.spin_until_future_complete(navigator, fut, timeout_sec=1.0)
+                if fut.done() and fut.result() is not None and fut.result().success:
+                    spawn_ok = True
+        except Exception:
+            pass
+
+        # Fallback to gz CLI if service bridge not yet active
+        if not spawn_ok:
+            import subprocess
+            import shutil
+            gz_bin = shutil.which('gz') or '/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz'
+            try:
+                subprocess.run([
+                    gz_bin, 'service', '-s', f'/world/{world}/remove',
+                    '--reqtype', 'gz.msgs.Entity',
+                    '--reptype', 'gz.msgs.Boolean',
+                    '--timeout', '500',
+                    '--req', 'name: "goal_marker", type: MODEL'
+                ], capture_output=True)
+                sdf = f"""<sdf version="1.7"><model name="goal_marker"><static>true</static><pose>{x} {y} 0.1 0 0 0</pose><link name="link"><visual name="visual"><geometry><sphere><radius>0.25</radius></sphere></geometry><material><ambient>0 1 0 1</ambient><diffuse>0 1 0 1</diffuse></material></visual></link></model></sdf>"""
+                subprocess.run([
+                    gz_bin, 'service', '-s', f'/world/{world}/create',
+                    '--reqtype', 'gz.msgs.EntityFactory',
+                    '--reptype', 'gz.msgs.Boolean',
+                    '--timeout', '500',
+                    '--req', f"sdf: '{sdf}'"
+                ], capture_output=True)
+            except Exception:
+                pass
 
 
 def report_distance(feedback):
@@ -92,7 +147,7 @@ def main():
         except Exception as e:
             navigator.get_logger().warn(f'Wait for {server_name} returned: {e}')
 
-    publish_goal_marker(navigator, args.x, args.y, frame=args.frame)
+    publish_goal_marker(navigator, args.x, args.y, frame=args.frame, namespace=args.ns, world=args.world)
 
     goal_pose = PoseStamped()
     goal_pose.header.frame_id = args.frame

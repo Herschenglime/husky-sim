@@ -18,6 +18,10 @@
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>nav2_simple_commander</exec_depend>
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>lifecycle_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>ros_gz_interfaces</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 

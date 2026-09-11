@@ -82,14 +82,16 @@ def build_gz_actions(world_sdf, headless, world='warehouse'):
         launch_arguments=[('gz_args', gz_args)],
     )
 
-    clock_bridge = Node(
-        package='ros_gz_bridge', executable='parameter_bridge', name='clock_bridge',
+    sim_bridge = Node(
+        package='ros_gz_bridge', executable='parameter_bridge', name='sim_bridge',
         output='screen', arguments=[
             '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
             f'/world/{world}/set_pose@ros_gz_interfaces/srv/SetEntityPose@gz.msgs.Pose@gz.msgs.Boolean',
+            f'/world/{world}/create@ros_gz_interfaces/srv/SpawnEntity@gz.msgs.EntityFactory@gz.msgs.Boolean',
+            f'/world/{world}/remove@ros_gz_interfaces/srv/DeleteEntity@gz.msgs.Entity@gz.msgs.Boolean',
         ])
 
-    return [resource_path, gz_sim, clock_bridge]
+    return [resource_path, gz_sim, sim_bridge]
 
 
 def launch_setup(context, *args, **kwargs):
